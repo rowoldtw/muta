@@ -52,8 +52,8 @@ const BOUNCE_TAU_MS = 70
 const BOUNCE_MAX = 36
 /** How much the page fades when pulled as far as it goes past its end. */
 const OVERSCROLL_FADE = 0.4
-/** How long a scroll hitting the page's end waits for the trackpad's touch-down before it's taken as a flick's momentum (ms). */
-const TOUCH_WAIT_MS = 40
+/** How long after a bounce starts the trackpad's touch-down can still turn it into a pull (ms): it arrives late. */
+const TOUCH_WAIT_MS = 60
 /** How long a beam takes to go round the edge (styles.css's muta-beam-turn), and how many show at once. */
 const BEAM_TURN_MS = 2600
 const MAX_BEAMS = 4
@@ -1809,8 +1809,9 @@ module.exports = class extends Plugin {
     let settled = false // let go of a pull: the momentum that follows mustn't pull again
     let held = false // this gesture was cancelled for a pull, so it can't scroll the page natively
     let lastWheel = 0
-    let prevDy = 0 // the scroll before this one, for a flick's speed
-    let bounce = 0 // momentum seems to have hit the end: waiting a moment to be sure (see below)
+    let speed = 0 // how fast the page is scrolling (px/ms, smoothed), for a flick's bounce
+    let bouncing = null // a flick's bounce off the end, and when it started
+    let bouncedAt = 0
     let timer = 0
     let frame = 0
     let last = 0
@@ -1858,20 +1859,21 @@ module.exports = class extends Plugin {
         easing: "cubic-bezier(0.32, 0.72, 0, 1)",
       })
     }
-    // Past the end and back, starting at velocity v (px/ms): x(t) = v·t·e^(−t/τ),
-    // peaking at τ, drawn as keyframes a frame apart, fading as it goes out.
+    // Past the end and back, carrying on at the page's own speed v (px/ms) so it
+    // never stalls or jumps as it hits the end: a critically damped spring,
+    // x(t) = v·t·e^(−t/τ), peaking at τ (sooner for a fast flick, so it goes
+    // no further than BOUNCE_MAX), drawn as keyframes, fading as it goes out.
     const overshoot = (v) => {
-      const tau = BOUNCE_TAU_MS
-      const peak = Math.abs(v) * tau / Math.E
-      const scale = peak > BOUNCE_MAX ? BOUNCE_MAX / peak : 1
+      const tau = Math.min(BOUNCE_TAU_MS, (BOUNCE_MAX * Math.E) / Math.max(Math.abs(v), 0.001))
       const total = tau * 7
       const frames = []
-      for (let t = 0; t <= total; t += 16) {
-        const x = v * scale * t * Math.exp(-t / tau)
+      for (let t = 0; t <= total; t += 8) {
+        const x = v * t * Math.exp(-t / tau)
         frames.push({ transform: `translateY(${x.toFixed(2)}px)`, opacity: fade(x), offset: t / total })
       }
-      frames[frames.length - 1] = { transform: "none", opacity: 1, offset: 1 }
-      el.animate(frames, { duration: total, easing: "linear" })
+      frames.push({ transform: "none", opacity: 1, offset: 1 })
+      bouncing = el.animate(frames, { duration: total, easing: "linear" })
+      bouncedAt = performance.now()
     }
     this.onGesture((phase) => {
       phases = true
@@ -1880,9 +1882,16 @@ module.exports = class extends Plugin {
       if (phase === "began") {
         settled = false
         win.clearTimeout(timer)
-        // A new swipe, not momentum after all: it pulls instead of bouncing.
-        win.clearTimeout(bounce)
-        bounce = 0
+        // A new swipe's touch-down arriving just after its first scrolls set
+        // off a bounce (it comes the long way, through the main process): not
+        // momentum after all, so the bounce becomes a pull from where it's got to.
+        if (bouncing && performance.now() - bouncedAt < TOUCH_WAIT_MS && el) {
+          const x = new DOMMatrix(win.getComputedStyle(el).transform).m42
+          bouncing.cancel()
+          shown = raw = x
+          draw()
+        }
+        bouncing = null
       }
       if (lifted) {
         // macOS keeps sending the swipe's momentum after the fingers lift;
@@ -1908,9 +1917,10 @@ module.exports = class extends Plugin {
         // left to scroll natively would be stuck.)
         const now = performance.now()
         if (!event.cancelable || now - lastWheel > HELD_GAP_MS) held = false
+        // The scroll's speed, from the time since the last one (wheel events come once a frame).
+        const gap = Math.min(Math.max(now - lastWheel, 4), 40)
+        speed = now - lastWheel > HELD_GAP_MS ? dy / 16 : speed * 0.4 + (dy / gap) * 0.6
         lastWheel = now
-        const lastDy = prevDy
-        prevDy = dy
         if (!raw && !((atTop && dy < 0) || (atBottom && dy > 0))) {
           if (held) {
             event.preventDefault()
@@ -1927,22 +1937,11 @@ module.exports = class extends Plugin {
         }
         if (lifted && !raw) {
           // A flick's momentum running into the end: the page carries on past
-          // it with the speed it had and eases back, as a critically damped
-          // spring (like macOS's own pages), and the rest of the momentum is
-          // ignored. But a new swipe's first events reach the page before the
-          // trackpad helper's touch-down does (it comes the long way, through
-          // the main process), and would look like momentum too: so it waits
-          // a moment for the touch-down, and bounces only if none comes.
-          if (!bounce) {
-            // Its speed, from this scroll and the one before (px/ms; wheel events come every frame).
-            const speed = (dy + (Math.sign(dy) === Math.sign(lastDy) ? lastDy : dy)) / 2 / 16
-            bounce = win.setTimeout(() => {
-              bounce = 0
-              if (!lifted || raw) return
-              settled = true
-              if (el && !reduceMotion()) overshoot(-speed)
-            }, TOUCH_WAIT_MS)
-          }
+          // it at once, at the speed it had, and eases back (overshoot()); the
+          // rest of the momentum is ignored. If this turns out to be a new
+          // swipe whose touch-down is late, the bounce becomes a pull (above).
+          settled = true
+          if (el && !reduceMotion()) overshoot(-speed)
           return
         }
         const next = raw - dy
