@@ -1,6 +1,6 @@
 # Muta
 
-Muta is an Obsidian plugin for macOS. Hovering a link opens its page in a small Liquid Glass window that floats over every app, on every Space, and moves like picture in picture. You can keep reading it while you work somewhere else.
+Muta is an Obsidian plugin for macOS. Hovering a link with ⌘ held opens its page in a small Liquid Glass window that floats over every app, on every Space, and moves like picture in picture. You can keep reading it while you work somewhere else.
 
 - **Edges grow into bars** when the cursor comes near: buttons and close on top, ‹ previous / next › at the bottom, a scroll rail with section marks on the right.
 - **Throw it** and it springs to a corner or the top middle. Throw it past the left or right edge to tuck it behind a handle.
@@ -26,7 +26,7 @@ Restart Obsidian and turn on **Muta**. To update, `git pull` and run the script 
 
 ## Settings
 
-Liquid Glass and its style, darkness, showing on every Space, swiping to move, overscroll, marking the previewed note, and **Order notes**: glob patterns (one per line) for the notes whose link lists set the bottom bar's order, for example `Roadmap/Phase */Phase *.md`. Without them it uses the note you hovered from.
+Liquid Glass and its style, darkness, the key to hold while hovering (or none), showing on every Space, swiping to move, overscroll, marking the previewed note, the agent beam and following along (and which agents to watch), and **Order notes**: glob patterns (one per line) for the notes whose link lists set the bottom bar's order, for example `Roadmap/Phase */Phase *.md`. Without them it uses the note you hovered from.
 
 "Toggle preview window" in the command palette switches back to Obsidian's own popovers.
 

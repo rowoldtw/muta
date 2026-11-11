@@ -2,7 +2,7 @@
 name: Feel
 ---
 
-Making the window feel native: borderless chrome, haptics, and a tuck that holds up everywhere. Planned as 0.2.0; the borderless top bar, menus at the button and settings cards shipped early, in 0.1.0. Lines marked *Proposed* come from the Notion list and don't have files yet.
+Making the window feel native: borderless chrome, haptics, and a tuck that holds up everywhere. Planned as 0.2.0; the borderless top bar, menus at the button and settings cards shipped early, in 0.1.0, and light mode, accessibility, the hover key and the handle and swipe fixes are done on `dev`. A prototype of tuck haptics and the magnet tuck (taken back out) is on the `backup-dev` branch. Lines marked *Proposed* come from the Notion list and don't have files yet.
 
 > [!area] Chrome
 >

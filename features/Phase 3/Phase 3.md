@@ -6,7 +6,7 @@ Working in any vault and theme, and a look of its own. Planned as 1.3.0. Lines m
 
 > [!area] Any vault
 >
-> - *Proposed:* Support more themes and their options, beyond Cupertino.
+> - [[Any theme]]
 > - *Proposed:* Find which other plugins' and themes' behaviors affect the preview, starting from an empty vault.
 > - *Proposed:* Tests that run without taking over the screen.
 
