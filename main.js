@@ -47,6 +47,8 @@ const SWITCH = {
   /** Stepping through the roadmap: the pages slide side by side, a page's width (plus gap px) apart. */
   sideways: { duration: 460, gap: 24, ease: "cubic-bezier(0.32, 0.72, 0, 1)" },
 }
+/** How long a scroll hitting the page's end waits for the trackpad's touch-down before it's taken as a flick's momentum (ms). */
+const TOUCH_WAIT_MS = 40
 /** How long a beam takes to go round the edge (styles.css's muta-beam-turn), and how many show at once. */
 const BEAM_TURN_MS = 2600
 const MAX_BEAMS = 4
@@ -1860,6 +1862,7 @@ module.exports = class extends Plugin {
     let settled = false // let go of a pull: the momentum that follows mustn't pull again
     let held = false // this gesture was cancelled for a pull, so it can't scroll the page natively
     let lastWheel = 0
+    let bounce = 0 // a flick's momentum seems to have hit the end: waiting a moment to be sure (see below)
     let timer = 0
     let frame = 0
     let last = 0
@@ -1909,6 +1912,9 @@ module.exports = class extends Plugin {
       if (phase === "began") {
         settled = false
         win.clearTimeout(timer)
+        // A new swipe, not momentum after all: it pulls instead of bouncing.
+        win.clearTimeout(bounce)
+        bounce = 0
       }
       if (lifted) {
         // macOS keeps sending the swipe's momentum after the fingers lift;
@@ -1953,18 +1959,30 @@ module.exports = class extends Plugin {
           // A flick's momentum running into the end: the page carries on past
           // it as far as its speed takes it and springs straight back, as
           // macOS pages do, and the rest of the momentum is ignored (holding
-          // the page out until the momentum ran out was the pause).
-          settled = true
-          if (!el || reduceMotion()) return
-          const past = -Math.sign(dy) * Math.min(Math.abs(dy) * BOUNCE_PER_PX, OVERSCROLL_MAX * 0.6)
-          el.animate(
-            [
-              { transform: "none", easing: "cubic-bezier(0.25, 0.8, 0.4, 1)" },
-              { transform: `translateY(${past}px)`, offset: 0.3, easing: "cubic-bezier(0.32, 0.72, 0, 1)" },
-              { transform: "none" },
-            ],
-            { duration: BOUNCE_MS }
-          )
+          // the page out until the momentum ran out was the pause). But a new
+          // swipe's first events reach the page before the trackpad helper's
+          // touch-down does (it comes the long way, through the main
+          // process), and would look like momentum too: so it waits a moment
+          // for the touch-down, and bounces only if none comes. Deciding at
+          // once was why pulling at the end sometimes bounced instead.
+          if (!bounce) {
+            const speed = dy
+            bounce = win.setTimeout(() => {
+              bounce = 0
+              if (!lifted || raw) return
+              settled = true
+              if (!el || reduceMotion()) return
+              const past = -Math.sign(speed) * Math.min(Math.abs(speed) * BOUNCE_PER_PX, OVERSCROLL_MAX * 0.6)
+              el.animate(
+                [
+                  { transform: "none", easing: "cubic-bezier(0.25, 0.8, 0.4, 1)" },
+                  { transform: `translateY(${past}px)`, offset: 0.3, easing: "cubic-bezier(0.32, 0.72, 0, 1)" },
+                  { transform: "none" },
+                ],
+                { duration: BOUNCE_MS }
+              )
+            }, TOUCH_WAIT_MS)
+          }
           return
         }
         const next = raw - dy
