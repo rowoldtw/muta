@@ -708,74 +708,94 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
 }
 
 /*
- * An agent at work in the vault (main.js): a beam of light rides round the
- * page's edge, inside the frame, in the agent's colours (after Beam,
+ * Agents at work in the vault (main.js): a beam of light rides round the
+ * page's edge, inside the frame, in each agent's colours (after Beam,
  * libraries.dev/beam): a thin bright stroke, a haze that spreads from it into
- * the page and a bloom at its head, all revealed by an arc that turns. It
- * fades in when the agent starts a turn and out when it finishes.
+ * the page and a bloom at its head, all revealed by an arc that turns. Each
+ * fades in when its agent starts a turn and out when it finishes. With
+ * several at once, each has its own beam, spread evenly round the edge
+ * (--muta-beam-offset) and shortened to fit (--muta-beam-span), all turning
+ * together; they slide apart or together as agents come and go.
  */
 @property --muta-beam-angle {
   syntax: "<angle>";
   inherits: true;
   initial-value: 0deg;
 }
-.muta-agent-glow {
-  display: none;
-  /* The arc the beam lights: about half way round, brightest in its back half. */
-  --muta-beam-arc: conic-gradient(
-    from var(--muta-beam-angle),
-    transparent 0%, transparent 30%,
-    rgb(255 255 255 / 0.1) 36%, rgb(255 255 255 / 0.35) 44%,
-    #fff 52%, #fff 80%,
-    rgb(255 255 255 / 0.35) 86%, rgb(255 255 255 / 0.1) 92%,
-    transparent 95%, transparent 100%
-  );
-  /* Its head: a white highlight that runs ahead of the colours. */
-  --muta-beam-head: conic-gradient(
-    from var(--muta-beam-angle),
-    transparent 0%, transparent 54%,
-    rgb(255 255 255 / 0.1) 57%, rgb(255 255 255 / 0.3) 60%,
-    rgb(255 255 255 / 0.6) 63%, rgb(255 255 255 / 0.75) 66%,
-    rgb(255 255 255 / 0.6) 69%, rgb(255 255 255 / 0.3) 72%,
-    rgb(255 255 255 / 0.1) 75%, transparent 78%, transparent 100%
-  );
+@property --muta-beam-offset {
+  syntax: "<angle>";
+  inherits: true;
+  initial-value: 0deg;
 }
-/* The agent's colours, fixed round the edge; the turning arc shows them in turn. Siri's for any other. */
-body.muta-window {
+@property --muta-beam-span {
+  syntax: "<angle>";
+  inherits: true;
+  initial-value: 360deg;
+}
+.muta-agent-glow,
+.muta-agent-rim {
+  /* The agent's colours, fixed round the edge; the turning arc shows them in turn. Siri's for any other. */
   --muta-beam-colors: #ff5fa2, #ff9f5a, #ffd66b, #7b8cff, #49c6ff, #c86bff, #ff5fa2;
-}
-body.muta-window[data-muta-agent="claude"] {
-  /* Claude's terracotta and warm oranges. */
-  --muta-beam-colors: #d97757, #f2a072, #c15f3c, #f6c9a8, #e0895f, #b5523a, #d97757;
-}
-body.muta-window[data-muta-agent="codex"] {
-  /* Blues. */
-  --muta-beam-colors: #3b82f6, #7dd3fc, #2563eb, #a5b4fc, #38bdf8, #4f46e5, #3b82f6;
-}
-body.muta-window[data-muta-agent="opencode"] {
-  /* Greens. */
-  --muta-beam-colors: #10b981, #6ee7b7, #059669, #bef264, #34d399, #0d9488, #10b981;
-}
-body.muta-window[data-muta-agent="antigravity"] {
-  /* Google's blue, red, yellow and green. */
-  --muta-beam-colors: #4285f4, #8ab4f8, #ea4335, #fbbc04, #34a853, #4285f4;
-}
-.muta-window.has-agent .muta-agent-glow,
-.muta-window.agent-leaving .muta-agent-glow {
-  position: absolute;
-  inset: 0;
-  z-index: 5;
-  display: block;
-  border-radius: inherit;
+  --muta-beam-from: calc(var(--muta-beam-angle) + var(--muta-beam-offset));
   pointer-events: none;
+  transition:
+    --muta-beam-offset 700ms cubic-bezier(0.32, 0.72, 0, 1),
+    --muta-beam-span 700ms cubic-bezier(0.32, 0.72, 0, 1);
+  /* All the beams keep step: main.js starts each at the same point of the turn. */
   animation:
     muta-beam-turn 2.6s linear infinite,
     muta-beam-in 600ms ease both;
 }
-.muta-window.agent-leaving:not(.has-agent) .muta-agent-glow {
+:is(.muta-agent-glow, .muta-agent-rim).is-leaving {
   animation:
     muta-beam-turn 2.6s linear infinite,
     muta-beam-out 500ms ease forwards;
+}
+:is(.muta-agent-glow, .muta-agent-rim)[data-agent="claude"] {
+  /* Claude's terracotta and warm oranges. */
+  --muta-beam-colors: #d97757, #f2a072, #c15f3c, #f6c9a8, #e0895f, #b5523a, #d97757;
+}
+:is(.muta-agent-glow, .muta-agent-rim)[data-agent="codex"] {
+  /* Blues. */
+  --muta-beam-colors: #3b82f6, #7dd3fc, #2563eb, #a5b4fc, #38bdf8, #4f46e5, #3b82f6;
+}
+:is(.muta-agent-glow, .muta-agent-rim)[data-agent="opencode"] {
+  /* Greens. */
+  --muta-beam-colors: #10b981, #6ee7b7, #059669, #bef264, #34d399, #0d9488, #10b981;
+}
+:is(.muta-agent-glow, .muta-agent-rim)[data-agent="antigravity"] {
+  /* Google's blue, red, yellow and green. */
+  --muta-beam-colors: #4285f4, #8ab4f8, #ea4335, #fbbc04, #34a853, #4285f4;
+}
+.muta-agent-glow {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  border-radius: inherit;
+  /* The arc the beam lights: about half way round its span, brightest in its back half. */
+  --muta-beam-arc: conic-gradient(
+    from var(--muta-beam-from),
+    transparent 0deg, transparent calc(var(--muta-beam-span) * 0.3),
+    rgb(255 255 255 / 0.1) calc(var(--muta-beam-span) * 0.36),
+    rgb(255 255 255 / 0.35) calc(var(--muta-beam-span) * 0.44),
+    #fff calc(var(--muta-beam-span) * 0.52), #fff calc(var(--muta-beam-span) * 0.8),
+    rgb(255 255 255 / 0.35) calc(var(--muta-beam-span) * 0.86),
+    rgb(255 255 255 / 0.1) calc(var(--muta-beam-span) * 0.92),
+    transparent calc(var(--muta-beam-span) * 0.95)
+  );
+  /* Its head: a white highlight that runs ahead of the colours. */
+  --muta-beam-head: conic-gradient(
+    from var(--muta-beam-from),
+    transparent 0deg, transparent calc(var(--muta-beam-span) * 0.54),
+    rgb(255 255 255 / 0.1) calc(var(--muta-beam-span) * 0.57),
+    rgb(255 255 255 / 0.3) calc(var(--muta-beam-span) * 0.6),
+    rgb(255 255 255 / 0.6) calc(var(--muta-beam-span) * 0.63),
+    rgb(255 255 255 / 0.75) calc(var(--muta-beam-span) * 0.66),
+    rgb(255 255 255 / 0.6) calc(var(--muta-beam-span) * 0.69),
+    rgb(255 255 255 / 0.3) calc(var(--muta-beam-span) * 0.72),
+    rgb(255 255 255 / 0.1) calc(var(--muta-beam-span) * 0.75),
+    transparent calc(var(--muta-beam-span) * 0.78)
+  );
 }
 .muta-agent-glow::after,
 .muta-agent-haze,
@@ -836,12 +856,15 @@ body.muta-window[data-muta-agent="antigravity"] {
 .muta-agent-bloom::before {
   padding: 4px;
   background: conic-gradient(
-    from var(--muta-beam-angle),
-    transparent 0%, transparent 58%,
-    rgb(255 255 255 / 0.08) 65%, rgb(255 255 255 / 0.45) 69%,
-    rgb(255 255 255 / 0.85) 70%, rgb(255 255 255 / 0.85) 70.5%,
-    rgb(255 255 255 / 0.45) 71.5%, rgb(255 255 255 / 0.08) 75%,
-    transparent 82%
+    from var(--muta-beam-from),
+    transparent 0deg, transparent calc(var(--muta-beam-span) * 0.58),
+    rgb(255 255 255 / 0.08) calc(var(--muta-beam-span) * 0.65),
+    rgb(255 255 255 / 0.45) calc(var(--muta-beam-span) * 0.69),
+    rgb(255 255 255 / 0.85) calc(var(--muta-beam-span) * 0.7),
+    rgb(255 255 255 / 0.85) calc(var(--muta-beam-span) * 0.705),
+    rgb(255 255 255 / 0.45) calc(var(--muta-beam-span) * 0.715),
+    rgb(255 255 255 / 0.08) calc(var(--muta-beam-span) * 0.75),
+    transparent calc(var(--muta-beam-span) * 0.82)
   );
   -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
   -webkit-mask-composite: xor;
@@ -849,31 +872,27 @@ body.muta-window[data-muta-agent="antigravity"] {
   mask-composite: exclude;
 }
 /*
- * The window's outer edge catches the beam's light, like the rim of macOS's
+ * The window's outer edge catches each beam's light, like the rim of macOS's
  * glass: the edge lights up in the agent's colours round where the beam's
  * head is, wider and softer than the beam, and a fringe a little ahead of it,
- * its colours shifted, splits the light like glass does. It turns with the
- * beam (both start with has-agent, so they keep step).
+ * its colours shifted, splits the light like glass does. One per beam,
+ * turning with it.
  */
 .muta-agent-rim {
-  display: none;
-}
-.muta-window.has-agent .muta-agent-rim,
-.muta-window.agent-leaving .muta-agent-rim {
   position: fixed;
   inset: 0;
   z-index: 35;
-  display: block;
   border-radius: var(--pip-radius);
-  pointer-events: none;
-  animation:
-    muta-beam-turn 2.6s linear infinite,
-    muta-beam-in 600ms ease both;
-}
-.muta-window.agent-leaving:not(.has-agent) .muta-agent-rim {
-  animation:
-    muta-beam-turn 2.6s linear infinite,
-    muta-beam-out 500ms ease forwards;
+  --muta-rim-arc: conic-gradient(
+    from calc(var(--muta-beam-from) + var(--muta-rim-lead, 0deg)),
+    transparent 0deg, transparent calc(var(--muta-beam-span) * 0.34),
+    rgb(255 255 255 / 0.15) calc(var(--muta-beam-span) * 0.46),
+    rgb(255 255 255 / 0.5) calc(var(--muta-beam-span) * 0.58),
+    #fff calc(var(--muta-beam-span) * 0.66),
+    rgb(255 255 255 / 0.5) calc(var(--muta-beam-span) * 0.74),
+    rgb(255 255 255 / 0.15) calc(var(--muta-beam-span) * 0.84),
+    transparent calc(var(--muta-beam-span) * 0.94)
+  );
 }
 .muta-agent-rim::before,
 .muta-agent-rim::after {
@@ -884,24 +903,12 @@ body.muta-window[data-muta-agent="antigravity"] {
   border-radius: inherit;
   background: conic-gradient(var(--muta-beam-colors));
   -webkit-mask:
-    conic-gradient(
-      from calc(var(--muta-beam-angle) + var(--muta-rim-lead, 0deg)),
-      transparent 0%, transparent 34%,
-      rgb(255 255 255 / 0.15) 46%, rgb(255 255 255 / 0.5) 58%,
-      #fff 66%, rgb(255 255 255 / 0.5) 74%,
-      rgb(255 255 255 / 0.15) 84%, transparent 94%
-    ),
+    var(--muta-rim-arc),
     linear-gradient(#fff 0 0) content-box,
     linear-gradient(#fff 0 0);
   -webkit-mask-composite: source-in, xor;
   mask:
-    conic-gradient(
-      from calc(var(--muta-beam-angle) + var(--muta-rim-lead, 0deg)),
-      transparent 0%, transparent 34%,
-      rgb(255 255 255 / 0.15) 46%, rgb(255 255 255 / 0.5) 58%,
-      #fff 66%, rgb(255 255 255 / 0.5) 74%,
-      rgb(255 255 255 / 0.15) 84%, transparent 94%
-    ),
+    var(--muta-rim-arc),
     linear-gradient(#fff 0 0) content-box,
     linear-gradient(#fff 0 0);
   mask-composite: intersect, exclude;
@@ -946,12 +953,14 @@ body.muta-window[data-muta-agent="antigravity"] {
 .muta-window .muta-follow.is-active {
   color: var(--interactive-accent) !important;
 }
-/* Reduce motion: the beam holds still, and comes and goes without fading. */
+/* Reduce motion: the beams hold still, and come and go without fading or sliding. */
 @media (prefers-reduced-motion: reduce) {
-  .muta-window.has-agent .muta-agent-glow {
+  .muta-agent-glow,
+  .muta-agent-rim {
     animation: none;
+    transition: none;
   }
-  .muta-window.agent-leaving:not(.has-agent) .muta-agent-glow {
+  :is(.muta-agent-glow, .muta-agent-rim).is-leaving {
     display: none;
   }
 }

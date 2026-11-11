@@ -53,6 +53,9 @@ const MENU = {
   open: { ms: 380, curve: [0.32, 0.72, 0, 1] },
   close: { ms: 240, curve: [0.4, 0, 0.2, 1] },
 }
+/** How long a beam takes to go round the edge (styles.css's muta-beam-turn), and how many show at once. */
+const BEAM_TURN_MS = 2600
+const MAX_BEAMS = 4
 /** The top bar drags the window; its buttons still click. */
 const HANDLE = ".view-header"
 const INTERACTIVE = "a, button, input, .clickable-icon"
@@ -205,7 +208,11 @@ const AGENT_EDITS = 20
 const AGENT_NAMES = { claude: "Claude Code", codex: "Codex", opencode: "OpenCode", antigravity: "Antigravity" }
 
 class AgentWatch {
-  /** onChange({ kind, name, edit: { file, text, at } | null } | null): the agent at work in the vault, or none. */
+  /**
+   * onChange({ kind, name, edit: { file, text, at } | null, all: [{ id, kind }] } | null):
+   * the agent at work in the vault that edited last, with every one at work
+   * (oldest first), or none.
+   */
   constructor(plugin, onChange) {
     this.plugin = plugin
     this.onChange = onChange
@@ -234,7 +241,7 @@ class AgentWatch {
 
   set(state) {
     const e = state && state.edit
-    const key = state ? `${state.kind}|${e ? e.file.path + "|" + e.at : ""}` : ""
+    const key = state ? `${state.kind}|${e ? e.file.path + "|" + e.at : ""}|${state.all.map((a) => a.id).join(",")}` : ""
     if (key === this.key) return
     this.key = key
     this.state = state
@@ -255,6 +262,7 @@ class AgentWatch {
         ...(s.agentAntigravity ? await this.antigravity(now) : []),
       ]
       let best = null
+      const all = []
       for (const session of sessions) {
         if (!session.working) continue
         const edits = session.edits
@@ -264,10 +272,16 @@ class AgentWatch {
           .sort((a, b) => b.at - a.at)
         if (!edits.length && !this.inVault(session.cwd)) continue
         const found = { kind: session.kind, name: AGENT_NAMES[session.kind], at: session.at, edit: edits[0] || null }
+        all.push({ id: `${session.kind}:${session.id}`, kind: session.kind })
         const when = (x) => (x.edit ? x.edit.at : x.at)
         if (!best || when(found) > when(best)) best = found
       }
-      this.set(best)
+      // In the order each was first seen at work, so their beams keep their places.
+      const seen = (this.firstSeen = this.firstSeen || new Map())
+      for (const a of all) if (!seen.has(a.id)) seen.set(a.id, now)
+      for (const id of seen.keys()) if (!all.some((a) => a.id === id)) seen.delete(id)
+      all.sort((a, b) => seen.get(a.id) - seen.get(b.id))
+      this.set(best && { ...best, all })
       this.prune(now)
     } catch (error) {
       console.error("Muta: checking for agents", error)
@@ -374,7 +388,7 @@ class AgentWatch {
       fs.closeSync(fd)
     }
     rec.seen = Date.now()
-    return { ...rec.session, at, edits: [...rec.session.edits] }
+    return { ...rec.session, id: f, at, edits: [...rec.session.edits] }
   }
 
   /** Forgets the files no session check has asked about for a while. */
@@ -538,7 +552,7 @@ class AgentWatch {
         const m = JSON.parse(last.data)
         working = m.role === "user" || !(m.time && m.time.completed) || m.finish === "tool-calls"
       } catch {}
-      const session = { kind: "opencode", cwd: row.directory, at: row.time_updated, edits: [], working }
+      const session = { id: row.id, kind: "opencode", cwd: row.directory, at: row.time_updated, edits: [], working }
       const parts = await query(
         `select data, time_updated from part where session_id = '${row.id}' and data like '%"filePath"%' order by time_updated desc limit 10`
       )
@@ -567,7 +581,7 @@ class AgentWatch {
     for (const row of rows) {
       if (!/^[\w-]+$/.test(row.id)) continue
       const working = !!row.time_busy && !(row.time_idle >= row.time_busy)
-      const session = { kind: "opencode", cwd: row.directory, at: row.time_updated, edits: [], working }
+      const session = { id: row.id, kind: "opencode", cwd: row.directory, at: row.time_updated, edits: [], working }
       const messages = await query(
         `select data, time_updated from session_message where session_id = '${row.id}' and type = 'assistant' ` +
           `and (data like '%"name":"edit"%' or data like '%"name":"write"%') order by seq desc limit 10`
@@ -618,7 +632,7 @@ class AgentWatch {
           const uri = JSON.parse(row.workspace_uris)[0]
           if (uri && uri.startsWith("file://")) cwd = decodeURIComponent(uri.slice(7))
         } catch {}
-        const session = { kind: "antigravity", cwd, at, edits: [], working: true }
+        const session = { id, kind: "antigravity", cwd, at, edits: [], working: true }
         const steps = await this.sqlite(
           path.join(dir, "conversations", `${id}.db`),
           "select idx, hex(step_payload) as hex from steps " +
@@ -820,22 +834,8 @@ module.exports = class extends Plugin {
     const doc = this.leaf && this.leaf.view.containerEl.ownerDocument
     if (!doc || doc === document) return
     const { agent } = this
-    // Going, the beam fades out (styles.css) before it's taken away.
-    if (!agent && doc.body.classList.contains("has-agent")) {
-      doc.body.classList.add("agent-leaving")
-      window.clearTimeout(this.agentLeaving)
-      this.agentLeaving = window.setTimeout(() => doc.body.classList.remove("agent-leaving"), 500)
-    }
     doc.body.classList.toggle("has-agent", !!agent)
-    // The beam rides round the page's edge, inside the frame (styles.css).
-    const page = this.leaf.view.contentEl
-    if (agent && !page.querySelector(":scope > .muta-agent-glow")) {
-      const glow = page.createDiv({ cls: "muta-agent-glow" })
-      glow.createDiv({ cls: "muta-agent-haze" })
-      glow.createDiv({ cls: "muta-agent-bloom" })
-    }
-    // Its glow takes the agent's colours (styles.css).
-    if (agent) doc.body.dataset.mutaAgent = agent.kind
+    this.showBeams(doc, agent ? agent.all : [])
     doc.body.classList.toggle("is-following", !!(agent && this.following))
     const button = this.leaf.view.mutaFollow
     if (button) {
@@ -847,6 +847,64 @@ module.exports = class extends Plugin {
       button.setAttribute("aria-label", label)
       button.toggleClass("is-active", this.following)
     }
+  }
+
+  /**
+   * A beam for each agent at work (styles.css): round the page's edge, and
+   * its light on the window's outer edge, in the agent's colours. Several are
+   * spread evenly round the edge, each shortened to its share, and slide
+   * apart or together as agents come and go; one that's stopped fades out.
+   * They all turn together: each starts at the same point of the turn.
+   */
+  showBeams(doc, agents) {
+    const page = this.leaf.view.contentEl
+    const beams = (this.beams = this.beams || new Map())
+    const shown = agents.slice(0, MAX_BEAMS)
+    // The window was opened again, or the page replaced: its beams are new.
+    for (const [id, beam] of beams)
+      if (!beam.glow.isConnected || beam.glow.parentElement !== page) {
+        beam.glow.remove()
+        beam.rim.remove()
+        beams.delete(id)
+      }
+    const sync = `${-(performance.now() % BEAM_TURN_MS)}ms, 0ms`
+    for (const a of shown) {
+      let beam = beams.get(a.id)
+      if (beam && beam.leaving) {
+        window.clearTimeout(beam.leaving)
+        beam.leaving = 0
+        for (const el of [beam.glow, beam.rim]) el.removeClass("is-leaving")
+      }
+      if (!beam) {
+        const glow = page.createDiv({ cls: "muta-agent-glow" })
+        glow.createDiv({ cls: "muta-agent-haze" })
+        glow.createDiv({ cls: "muta-agent-bloom" })
+        const rim = doc.body.createDiv({ cls: "muta-agent-rim" })
+        beam = { glow, rim, leaving: 0 }
+        beams.set(a.id, beam)
+        for (const el of [glow, rim]) {
+          el.dataset.agent = a.kind
+          el.style.animationDelay = sync
+        }
+      }
+    }
+    // Spread round the edge: each its share of the turn, new ones starting where the last left off.
+    shown.forEach((a, i) => {
+      const beam = beams.get(a.id)
+      for (const el of [beam.glow, beam.rim]) {
+        el.style.setProperty("--muta-beam-offset", `${(360 / shown.length) * i}deg`)
+        el.style.setProperty("--muta-beam-span", `${360 / shown.length}deg`)
+      }
+    })
+    for (const [id, beam] of beams)
+      if (!shown.some((a) => a.id === id) && !beam.leaving) {
+        for (const el of [beam.glow, beam.rim]) el.addClass("is-leaving")
+        beam.leaving = window.setTimeout(() => {
+          beam.glow.remove()
+          beam.rim.remove()
+          beams.delete(id)
+        }, 500)
+      }
   }
 
   /** Follows the agent, or stops: following, the window shows the note it's changing, at the change. */
@@ -1904,8 +1962,6 @@ module.exports = class extends Plugin {
     const gestures = new Set()
     this.onGesture = (handler) => gestures.add(handler)
     doc.defaultView.mutaGesture = (phase) => gestures.forEach((handler) => handler(phase))
-    // The window's outer edge, catching the agent beam's light (styles.css).
-    doc.body.createDiv({ cls: "muta-agent-rim" })
     this.attachEdges(doc)
     this.attachOverscroll(doc)
     this.attachDrag(doc)
