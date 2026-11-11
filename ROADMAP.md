@@ -83,7 +83,7 @@ Working in any vault and theme, and a look of its own. Planned as 1.3.0. Lines m
 
 > [!area] Identity
 >
-> - *Proposed:* Snapped to the top middle, the window morphs into the MacBook's notch.
+> - [x] [Morph into the notch](features/Phase%203/Morph%20into%20the%20notch.md): At the top middle of a MacBook with a notch, the window hangs from the notch, morphs into it, and grows back out when you hover it.
 > - *Proposed:* Settings panel changes.
 > - *Proposed:* Updated page navigation styling.
 

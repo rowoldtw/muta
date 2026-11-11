@@ -188,9 +188,11 @@ module.exports = class extends Plugin {
       )
       if (!(file instanceof TFile) || file.extension !== "md")
         return original.apply(this, arguments)
-      // The note you hovered from (not links inside the preview itself) gives the switcher its order when no order notes are set.
-      const fromPreview = targetEl && targetEl.ownerDocument.body.classList.contains("muta-window")
-      if (!fromPreview && sourcePath) plugin.sourcePath = sourcePath
+      // Links inside the preview itself don't switch it on hover (clicking one
+      // goes there), so reading it never jumps away under the cursor.
+      if (targetEl && targetEl.ownerDocument.body.classList.contains("muta-window")) return
+      // The note you hovered from gives the switcher its order when no order notes are set.
+      if (sourcePath) plugin.sourcePath = sourcePath
       plugin.schedule(file, plugin.direction(targetEl))
     }
     this.register(() => {
