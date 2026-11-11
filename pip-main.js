@@ -339,6 +339,20 @@ class Pip {
     if (tries > 1) setTimeout(() => this.ensureAt(target, tries - 1), 60)
   }
 
+  /**
+   * Docked, it stays at the notch: macOS can move a window that's partly
+   * above the screen back onto it (as windows and Spaces change), leaving
+   * it off to one side. It's put straight back. (drifts notes where it was.)
+   */
+  holdAtNotch() {
+    const at = this.state.bounds
+    const b = this.bounds()
+    if (!at || (Math.abs(b.x - at.x) <= 1 && Math.abs(b.y - at.y) <= 1)) return
+    this.drifts = [...(this.drifts || []).slice(-9), { x: b.x, y: b.y, when: Date.now() }]
+    this.raise()
+    this.window.setBounds({ ...b, x: at.x, y: at.y })
+  }
+
   /** Out on its side, at the corner nearest where its handle was slid to. */
   untuck() {
     if (!this.alive() || !this.state.tucked) return
@@ -512,6 +526,7 @@ class Pip {
   pollNotch() {
     const n = this.notch
     if (!n || !this.alive() || this.drag || this.swipe || this.spring || this.landing) return
+    this.holdAtNotch()
     const now = Date.now()
     const c = screen.getCursorScreenPoint()
     // Out, the whole window counts; in, the notch and a little around it.
