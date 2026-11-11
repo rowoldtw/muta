@@ -101,8 +101,58 @@ static CGPathRef hangingPath(CGFloat left, CGFloat right, CGFloat bottom, CGFloa
   return p;
 }
 
+static NSString* const kRim = @"muta-rim";
+
+// The glare: a thin light line just inside the shape's edge, like Liquid
+// Glass's rim, brightest along the bottom and fading out towards the top,
+// where the shape meets the notch and the screen's edge. A gradient seen
+// through a stroke of the shape's path (the view's mask keeps its inner half).
+static CAShapeLayer* rimLine(CALayer* layer, NSRect bounds) {
+  CAGradientLayer* rim = nil;
+  for (CALayer* sub in layer.sublayers)
+    if ([sub.name isEqualToString:kRim]) rim = (CAGradientLayer*)sub;
+  if (!rim) {
+    rim = [CAGradientLayer layer];
+    rim.name = kRim;
+    // Layers here are y up: the bottom of the window is at 0.
+    rim.startPoint = CGPointMake(0.5, 0);
+    rim.endPoint = CGPointMake(0.5, 1);
+    rim.colors = @[
+      (__bridge id)[NSColor colorWithWhite:1 alpha:0.32].CGColor,
+      (__bridge id)[NSColor colorWithWhite:1 alpha:0.12].CGColor,
+      (__bridge id)[NSColor colorWithWhite:1 alpha:0.0].CGColor,
+    ];
+    rim.locations = @[ @0, @0.45, @0.8 ];
+    CAShapeLayer* line = [CAShapeLayer layer];
+    line.fillColor = nil;
+    line.strokeColor = NSColor.blackColor.CGColor;
+    line.lineWidth = 2;  // 1px of it inside the shape
+    rim.mask = line;
+    [layer addSublayer:rim];
+  }
+  rim.frame = bounds;
+  rim.mask.frame = bounds;
+  return (CAShapeLayer*)rim.mask;
+}
+
+static void morphPath(CAShapeLayer* shape, CGPathRef path, double seconds, CAMediaTimingFunction* curve) {
+  if (seconds > 0) {
+    CABasicAnimation* morph = [CABasicAnimation animationWithKeyPath:@"path"];
+    morph.fromValue = (__bridge id)(shape.presentationLayer ? shape.presentationLayer.path : shape.path);
+    morph.toValue = (__bridge id)path;
+    morph.duration = seconds;
+    morph.timingFunction = curve;
+    [shape addAnimation:morph forKey:@"path"];
+  }
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
+  shape.path = path;
+  [CATransaction commit];
+}
+
 // Masks view to the hanging shape, from o's left, right, bottom, shoulder,
-// radius and lift; over seconds along the curve (x1, y1, x2, y2) when given.
+// radius and lift, with the glare along its edge; over seconds along the
+// curve (x1, y1, x2, y2) when given.
 static void setHangingShape(napi_env env, napi_value o, NSView* view, double seconds) {
   view.wantsLayer = YES;
   CALayer* layer = view.layer;
@@ -117,21 +167,12 @@ static void setHangingShape(napi_env env, napi_value o, NSView* view, double sec
   CGPathRef path = hangingPath(number(env, o, "left", 0), number(env, o, "right", bounds.size.width),
                                number(env, o, "bottom", bounds.size.height), number(env, o, "shoulder", 0),
                                number(env, o, "radius", 0), number(env, o, "lift", 0), bounds.size.height);
-  if (seconds > 0) {
-    CABasicAnimation* morph = [CABasicAnimation animationWithKeyPath:@"path"];
-    morph.fromValue = (__bridge id)(mask.presentationLayer ? mask.presentationLayer.path : mask.path);
-    morph.toValue = (__bridge id)path;
-    morph.duration = seconds;
-    morph.timingFunction = [CAMediaTimingFunction functionWithControlPoints:number(env, o, "x1", 0.25)
-                                                                           :number(env, o, "y1", 0.1)
-                                                                           :number(env, o, "x2", 0.25)
-                                                                           :number(env, o, "y2", 1)];
-    [mask addAnimation:morph forKey:@"path"];
-  }
-  [CATransaction begin];
-  [CATransaction setDisableActions:YES];
-  mask.path = path;
-  [CATransaction commit];
+  CAMediaTimingFunction* curve = [CAMediaTimingFunction functionWithControlPoints:number(env, o, "x1", 0.25)
+                                                                                 :number(env, o, "y1", 0.1)
+                                                                                 :number(env, o, "x2", 0.25)
+                                                                                 :number(env, o, "y2", 1)];
+  morphPath(mask, path, seconds, curve);
+  morphPath(rimLine(layer, bounds), path, seconds, curve);
   CGPathRelease(path);
 }
 
@@ -176,6 +217,7 @@ static int setBlurRadius(CALayer* layer, double radius, bool pure) {
     layer.filters = filters;
   }
   for (CALayer* sub in layer.sublayers) {
+    if ([sub.name isEqualToString:kRim]) continue;  // the glare, ours
     bool hasBackdrop = [NSStringFromClass(sub.class) containsString:@"Backdrop"] || sub.sublayers.count;
     // The tint and fill layers over the backdrop.
     if (pure && !hasBackdrop) sub.hidden = YES;
