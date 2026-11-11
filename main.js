@@ -173,8 +173,9 @@ const alive = (w) => !!(w && !w.isDestroyed())
 // Claude Code, Codex and OpenCode each keep a record of their sessions on
 // disk: Claude Code a JSONL file per session under ~/.claude/projects (named
 // after the folder it runs in), Codex one per session under ~/.codex/sessions
-// (by date), OpenCode a SQLite database. A session written to in the last few
-// seconds is working; the files it has edited (Claude Code's Edit and Write,
+// (by date), OpenCode a SQLite database. A session is working while its
+// record says it's mid-turn (a prompt or tool result not yet answered with a
+// final reply); the files it has edited (Claude Code's Edit and Write,
 // Codex's patches, OpenCode's edit and write) say which notes. It's working
 // in this vault when it runs from inside the vault or has just edited a note
 // in it, including notes the vault links to from elsewhere (a symlinked
@@ -182,12 +183,16 @@ const alive = (w) => !!(w && !w.isDestroyed())
 
 /** How often the agents' records are checked (ms). */
 const AGENT_POLL_MS = 1500
-/** A session written to this recently is working (ms): agents write between steps, so a long step stays quiet a while. */
+/** A session's record says whether it's mid-turn; one untouched this long is taken as stopped whatever it says (ms), as after a crash. */
+const AGENT_STALE_MS = 600000
+/** Without that (a turn begun before the part of the record read), one written to this recently is working (ms). */
 const AGENT_ACTIVE_MS = 45000
 /** An edit this recent says which note an agent is working on (ms). */
 const AGENT_EDIT_MS = 300000
-/** How much of the end of a session's record is read for its latest edits (bytes). */
-const AGENT_TAIL = 192 * 1024
+/** How much of the end of a session's record is read the first time it's seen (bytes); after that, only what's been added. Claude Code's hold whole requests, a megabyte or more a line. */
+const AGENT_TAIL = 8 * 1024 * 1024
+/** How many of a session's latest edits are kept. */
+const AGENT_EDITS = 20
 const AGENT_NAMES = { claude: "Claude Code", codex: "Codex", opencode: "OpenCode" }
 
 class AgentWatch {
@@ -200,6 +205,8 @@ class AgentWatch {
     this.key = ""
     this.state = null
     this.roots = null
+    // What each session file has said so far, and how far it's been read.
+    this.records = new Map()
   }
 
   start() {
@@ -237,6 +244,7 @@ class AgentWatch {
       ]
       let best = null
       for (const session of sessions) {
+        if (!session.working) continue
         const edits = session.edits
           .filter((e) => now - e.at < AGENT_EDIT_MS)
           .map((e) => ({ ...e, file: this.toVault(e.path) }))
@@ -248,6 +256,7 @@ class AgentWatch {
         if (!best || when(found) > when(best)) best = found
       }
       this.set(best)
+      this.prune(now)
     } catch (error) {
       console.error("Muta: checking for agents", error)
     } finally {
@@ -318,23 +327,50 @@ class AgentWatch {
     }
   }
 
-  /** The last AGENT_TAIL bytes of file f, as lines (the first, cut off, dropped). */
-  tail(f) {
+  /**
+   * The session record file f keeps: { kind, cwd, edits, working }, made by
+   * init and brought up to date by passing read(line, session) each line
+   * written since the last poll (the first time, the last AGENT_TAIL bytes'),
+   * so a long session isn't read again every poll.
+   */
+  session(f, at, init, read) {
     const fs = require("fs")
+    let rec = this.records.get(f)
     const fd = fs.openSync(f, "r")
     try {
       const size = fs.fstatSync(fd).size
-      const len = Math.min(size, AGENT_TAIL)
-      const buf = Buffer.alloc(len)
-      fs.readSync(fd, buf, 0, len, size - len)
-      const lines = buf.toString("utf8").split("\n")
-      return len < size ? lines.slice(1) : lines
+      if (!rec || size < rec.pos) {
+        rec = { pos: Math.max(0, size - AGENT_TAIL), rest: null, session: init() }
+        // Started mid-line: the first, cut off, is dropped.
+        if (rec.pos > 0) rec.rest = false
+        this.records.set(f, rec)
+      }
+      if (size > rec.pos) {
+        const buf = Buffer.alloc(size - rec.pos)
+        fs.readSync(fd, buf, 0, buf.length, rec.pos)
+        rec.pos = size
+        const text = buf.toString("utf8")
+        const lines = ((rec.rest || "") + text).split("\n")
+        const cut = rec.rest === false
+        rec.rest = lines.pop()
+        if (cut) lines.shift()
+        for (const line of lines) if (line) read(line, rec.session)
+        const { edits } = rec.session
+        if (edits.length > AGENT_EDITS) edits.splice(0, edits.length - AGENT_EDITS)
+      }
     } finally {
       fs.closeSync(fd)
     }
+    rec.seen = Date.now()
+    return { ...rec.session, at, edits: [...rec.session.edits] }
   }
 
-  /** Session files under dir (and its folders, depth deep) written to in the last AGENT_ACTIVE_MS. */
+  /** Forgets the files no session check has asked about for a while. */
+  prune(now) {
+    for (const [f, rec] of this.records) if (now - rec.seen > AGENT_STALE_MS) this.records.delete(f)
+  }
+
+  /** Session files under dir (and its folders, depth deep) written to in the last AGENT_STALE_MS. */
   recent(dir, now, test, depth = 0) {
     const fs = require("fs")
     const path = require("path")
@@ -350,7 +386,7 @@ class AgentWatch {
       try {
         const st = fs.statSync(full)
         if (st.isDirectory() && depth > 0) out.push(...this.recent(full, now, test, depth - 1))
-        else if (st.isFile() && test(name) && now - st.mtimeMs < AGENT_ACTIVE_MS) out.push({ file: full, at: st.mtimeMs })
+        else if (st.isFile() && test(name) && now - st.mtimeMs < AGENT_STALE_MS) out.push({ file: full, at: st.mtimeMs })
       } catch {}
     }
     return out
@@ -372,16 +408,19 @@ class AgentWatch {
     const sessions = []
     for (const folder of folders)
       for (const { file, at } of this.recent(path.join(dir, folder), now, (n) => n.endsWith(".jsonl"))) {
-        const session = { kind: "claude", cwd: null, at, edits: [] }
-        for (const line of this.tail(file)) {
-          if (!line.includes('"cwd"') && !line.includes('"tool_use"')) continue
+        const init = () => ({ kind: "claude", cwd: null, edits: [], working: null })
+        const session = this.session(file, at, init, (line, session) => {
+          if (!/"type":"(user|assistant|system)"/.test(line)) return
           let d
           try {
             d = JSON.parse(line)
           } catch {
-            continue
+            return
           }
+          // Only the conversation's own lines (not the requests Claude Code also keeps there).
+          if (!/^(user|assistant|system)$/.test(d.type)) return
           if (d.cwd) session.cwd = d.cwd
+          if (!d.isSidechain) session.working = this.claudeWorking(d, session.working)
           const content = d.message && Array.isArray(d.message.content) ? d.message.content : []
           for (const c of content) {
             if (c.type !== "tool_use" || !c.input || !/^(Edit|MultiEdit|Write)$/.test(c.name)) continue
@@ -389,10 +428,26 @@ class AgentWatch {
             const text = input.new_string || (input.edits && input.edits[0] && input.edits[0].new_string) || input.content || ""
             session.edits.push({ path: input.file_path, text, at: Date.parse(d.timestamp) || at })
           }
-        }
+        })
+        if (session.working === null) session.working = now - at < AGENT_ACTIVE_MS
         sessions.push(session)
       }
     return sessions
+  }
+
+  /**
+   * Whether a Claude Code session is mid-turn after record d (was: before it).
+   * A prompt or a tool's result starts or continues a turn; a reply that ends
+   * the turn, the hooks that run when it stops, or an interruption end it.
+   */
+  claudeWorking(d, was) {
+    const m = d.message || {}
+    if (d.type === "system") return d.subtype === "stop_hook_summary" || d.subtype === "turn_duration" ? false : was
+    if (d.type === "assistant") return m.stop_reason === "tool_use" || !m.stop_reason ? true : false
+    if (d.type !== "user" || d.isMeta) return was
+    const content = typeof m.content === "string" ? m.content : Array.isArray(m.content) ? m.content.map((c) => c.text || "").join("") : ""
+    // Interrupted, or a command Claude Code ran itself (/compact, /clear): no turn follows.
+    return !/^(\[Request interrupted|<command-name>|<local-command)/.test(content.trim())
   }
 
   /** Codex: today's and yesterday's sessions, with the files their patches add or update. */
@@ -408,14 +463,17 @@ class AgentWatch {
     )
     const sessions = []
     for (const { file, at } of files) {
-      const session = { kind: "codex", cwd: this.codexCwd(file), at, edits: [] }
-      for (const line of this.tail(file)) {
-        if (!line.includes("File: ")) continue
+      const init = () => ({ kind: "codex", cwd: this.codexCwd(file), edits: [], working: null })
+      const session = this.session(file, at, init, (line, session) => {
+        // A turn starts with task_started and ends with task_complete (or turn_aborted).
+        const turn = line.match(/"payload":\{"type":"(task_started|task_complete|turn_aborted)"/)
+        if (turn) session.working = turn[1] === "task_started"
+        if (!line.includes("File: ")) return
         let d
         try {
           d = JSON.parse(line)
         } catch {
-          continue
+          return
         }
         const p = d.payload || {}
         const call = typeof p.input === "string" ? p.input : typeof p.arguments === "string" ? p.arguments : ""
@@ -427,7 +485,8 @@ class AgentWatch {
           const added = m[2].split("\n").find((l) => l.startsWith("+") && l.slice(1).trim())
           session.edits.push({ path: m[1].trim(), text: added ? added.slice(1) : "", at: Date.parse(d.timestamp) || at })
         }
-      }
+      })
+      if (session.working === null) session.working = now - at < AGENT_ACTIVE_MS
       sessions.push(session)
     }
     return sessions
@@ -463,11 +522,18 @@ class AgentWatch {
           }
         })
       )
-    const rows = await query(`select id, directory, time_updated from session where time_updated > ${Math.floor(now - AGENT_ACTIVE_MS)}`)
+    const rows = await query(`select id, directory, time_updated from session where time_updated > ${Math.floor(now - AGENT_STALE_MS)}`)
     const sessions = []
     for (const row of rows) {
       if (!/^[\w-]+$/.test(row.id)) continue
-      const session = { kind: "opencode", cwd: row.directory, at: row.time_updated, edits: [] }
+      // Mid-turn while its latest message is the prompt, or a reply not yet finished or ending in tool calls.
+      const [last] = await query(`select data from message where session_id = '${row.id}' order by time_created desc limit 1`)
+      let working = false
+      try {
+        const m = JSON.parse(last.data)
+        working = m.role === "user" || !(m.time && m.time.completed) || m.finish === "tool-calls"
+      } catch {}
+      const session = { kind: "opencode", cwd: row.directory, at: row.time_updated, edits: [], working }
       const parts = await query(
         `select data, time_updated from part where session_id = '${row.id}' and data like '%"filePath"%' order by time_updated desc limit 10`
       )
@@ -627,6 +693,12 @@ module.exports = class extends Plugin {
     const doc = this.leaf && this.leaf.view.containerEl.ownerDocument
     if (!doc || doc === document) return
     const { agent } = this
+    // Going, the beam fades out (styles.css) before it's taken away.
+    if (!agent && doc.body.classList.contains("has-agent")) {
+      doc.body.classList.add("agent-leaving")
+      window.clearTimeout(this.agentLeaving)
+      this.agentLeaving = window.setTimeout(() => doc.body.classList.remove("agent-leaving"), 500)
+    }
     doc.body.classList.toggle("has-agent", !!agent)
     // Its glow takes the agent's colours (styles.css).
     if (agent) doc.body.dataset.mutaAgent = agent.kind
@@ -1573,7 +1645,7 @@ module.exports = class extends Plugin {
     this.onGesture = (handler) => gestures.add(handler)
     doc.defaultView.mutaGesture = (phase) => gestures.forEach((handler) => handler(phase))
     // A glow round the inner edge while an agent works in the vault.
-    doc.body.createDiv({ cls: "muta-agent-glow" })
+    doc.body.createDiv({ cls: "muta-agent-glow" }).createDiv({ cls: "muta-agent-bloom" })
     this.attachEdges(doc)
     this.attachOverscroll(doc)
     this.attachDrag(doc)
