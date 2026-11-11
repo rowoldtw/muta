@@ -554,6 +554,7 @@ class Pip {
       }, still ? 0 : SHRINK_MS)
       // It gets no mouseleave once it lets clicks through, so its bars close here.
       this.renderNotch(`b.classList.add("is-notched")
+        if (window.mutaCloseMenu) window.mutaCloseMenu(true)
         b.classList.remove("is-armed", "is-near-top", "is-near-bottom", "is-near-right", "is-switcher-open", "is-rail-open")`)
     }
   }
@@ -605,6 +606,21 @@ class Pip {
     try {
       this.native.shape(this.window.getNativeWindowHandle(), { ...shape, x1, y1, x2, y2 }, seconds)
     } catch {}
+  }
+
+  /** Whether glass.node can put a panel of macOS's own material behind the page (for the bottom bar's menu). */
+  hasPanel() {
+    return !!(this.native && this.native.panel)
+  }
+
+  /** The menu's panel of macOS's own material behind the page, grown or shrunk (glass.node's panel()). */
+  panel(options) {
+    if (!this.hasPanel() || !this.alive()) return false
+    try {
+      return this.native.panel(this.window.getNativeWindowHandle(), options)
+    } catch {
+      return false
+    }
   }
 
   /** Runs a little script on the page's body, b (styles.css draws the rest). */

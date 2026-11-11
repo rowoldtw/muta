@@ -57,8 +57,20 @@ html.muta-root body.muta-window .mod-root {
   --muta-ink: 0 0 0;
 }
 html.muta-root body.muta-window {
-  /* A steady dark layer over the glass: less see-through, and it hides the glass's own shifts. */
-  background: rgb(var(--muta-frame) / var(--muta-darkness, 0.55)) !important;
+  background: transparent !important;
+}
+/*
+ * A steady dark layer over the glass: less see-through, and it hides the
+ * glass's own shifts. Its own layer, so the bottom bar's menu can cut a hole
+ * in it for the native material underneath (main.js, morphMenu()).
+ */
+html.muta-root body.muta-window:not(.is-docked)::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: rgb(var(--muta-frame) / var(--muta-darkness, 0.55));
 }
 .muta-window.is-near-top,
 .muta-window.is-dragging {
@@ -491,7 +503,9 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
  * The roadmap list, popped out above the switcher: a menu in the window's own
  * style, its corners concentric with the page's, grey highlights like the
  * bars' buttons (not the theme's accent), the current page ticked, and each
- * phase and area set off by a hairline.
+ * phase and area set off by a hairline. It morphs out of the name's button
+ * (main.js, openMenu()); with glass.node, over a panel of macOS's own menu
+ * material (has-menu-material), seen through a hole in the page.
  */
 .muta-switcher-popout {
   position: fixed;
@@ -508,19 +522,21 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
     inset 0 1px 0 rgb(var(--muta-ink) / 0.05),
     var(--pip-popout-shadow);
   font-size: 12px;
-  opacity: 0;
+  visibility: hidden;
   pointer-events: none;
-  transform-origin: 50% 100%;
   translate: -50% 0;
-  scale: 0.96;
-  transition:
-    opacity 140ms ease-out,
-    scale 220ms var(--pip-ease);
+}
+.muta-window:is(.is-switcher-open, .is-menu-closing) .muta-switcher-popout {
+  visibility: visible;
 }
 .muta-window.is-switcher-open .muta-switcher-popout {
-  opacity: 1;
   pointer-events: auto;
-  scale: 1;
+}
+/* Over the native material: no fill of its own, just a hairline. */
+.muta-window.has-menu-material .muta-switcher-popout {
+  background: transparent;
+  box-shadow: inset 0 1px 0 rgb(var(--muta-ink) / 0.06);
+  border-color: rgb(var(--muta-ink) / 0.1);
 }
 .muta-switcher-list {
   position: relative;
@@ -946,8 +962,8 @@ body.muta-window[data-muta-agent="antigravity"] {
  * blur solid then too.
  */
 @media (prefers-reduced-transparency: reduce) {
-  html.muta-root body.muta-window:not(.is-docked) {
-    background: rgb(var(--muta-frame)) !important;
+  html.muta-root body.muta-window:not(.is-docked)::before {
+    background: rgb(var(--muta-frame));
   }
   html.muta-root:has(> body.is-docked)::before {
     background-image: linear-gradient(to bottom, #000, rgb(28 28 30) 45%);

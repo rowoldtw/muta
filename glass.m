@@ -19,6 +19,12 @@
 //   glass.allowAboveMenuBar(win.getNativeWindowHandle())
 //   glass.shape(win.getNativeWindowHandle(), { left, right, bottom, shoulder, radius, lift, x1, y1, x2, y2 }, seconds)
 //   glass.notches() → [{ x, y, width, height }], in Electron's screen coordinates
+//   glass.panel(win.getNativeWindowHandle(), { show, x, y, width, height, radius,
+//               fromX, fromY, fromWidth, fromHeight, fromRadius, seconds, x1, y1, x2, y2, material, dark })
+//     A panel of macOS's own material (a menu's, by default) behind the page,
+//     over the glass, at the rect (from the page's top left), growing from the
+//     from-rect over seconds along the curve; show false shrinks it back into
+//     the from-rect and takes it away. The page leaves a hole over it.
 //
 // Build: clang -bundle -undefined dynamic_lookup -fobjc-arc -framework AppKit
 //        glass.m -o glass.node
@@ -399,6 +405,93 @@ static napi_value allowAboveMenuBar(napi_env env, napi_callback_info info) {
   return result(env, true);
 }
 
+static NSString* const kPanel = @"muta-panel";
+// Bumped by every panel() call, so a panel going away isn't taken away after it's been asked back.
+static int panelGeneration = 0;
+
+// A rect from the page's top left (CSS pixels, y down) in root's coordinates (y up).
+static NSRect fromTop(NSView* root, double x, double y, double width, double height) {
+  return NSMakeRect(x, root.bounds.size.height - y - height, width, height);
+}
+
+static void animateRadius(CALayer* layer, double radius, double seconds, CAMediaTimingFunction* curve) {
+  if (seconds > 0) {
+    CABasicAnimation* round = [CABasicAnimation animationWithKeyPath:@"cornerRadius"];
+    round.fromValue = @((layer.presentationLayer ?: layer).cornerRadius);
+    round.toValue = @(radius);
+    round.duration = seconds;
+    round.timingFunction = curve;
+    [layer addAnimation:round forKey:@"cornerRadius"];
+  }
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
+  layer.cornerRadius = radius;
+  [CATransaction commit];
+}
+
+static napi_value panel(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value argv[2];
+  napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
+  NSView* view = argc > 0 ? viewFrom(env, argv[0]) : nil;
+  NSView* root = view.window.contentView;
+  if (!root || argc < 2) return result(env, false);
+  napi_value o = argv[1];
+  bool show = flag(env, o, "show", true);
+  double seconds = number(env, o, "seconds", 0);
+  CAMediaTimingFunction* curve = [CAMediaTimingFunction functionWithControlPoints:number(env, o, "x1", 0.32)
+                                                                                 :number(env, o, "y1", 0.72)
+                                                                                 :number(env, o, "x2", 0)
+                                                                                 :number(env, o, "y2", 1)];
+  NSRect from = fromTop(root, number(env, o, "fromX", 0), number(env, o, "fromY", 0), number(env, o, "fromWidth", 0),
+                        number(env, o, "fromHeight", 0));
+  double fromRadius = number(env, o, "fromRadius", 0);
+  NSVisualEffectView* p = nil;
+  for (NSView* v in root.subviews)
+    if ([v.identifier isEqualToString:kPanel]) p = (NSVisualEffectView*)v;
+  int generation = ++panelGeneration;
+  if (!p) {
+    if (!show) return result(env, false);
+    p = [[NSVisualEffectView alloc] initWithFrame:from];
+    p.identifier = kPanel;
+    p.blendingMode = NSVisualEffectBlendingModeBehindWindow;
+    p.state = NSVisualEffectStateActive;
+    p.wantsLayer = YES;
+    p.layer.cornerCurve = kCACornerCurveContinuous;
+    p.layer.masksToBounds = YES;
+    p.layer.cornerRadius = fromRadius;
+    p.alphaValue = 0;
+    // Over the window's glass, under the page.
+    NSView* glass = existing(root);
+    if (glass) [root addSubview:p positioned:NSWindowAbove relativeTo:glass];
+    else [root addSubview:p positioned:NSWindowBelow relativeTo:nil];
+  }
+  p.material = (NSVisualEffectMaterial)number(env, o, "material", NSVisualEffectMaterialMenu);
+  p.appearance = [NSAppearance appearanceNamed:flag(env, o, "dark", true) ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+  NSRect to = show ? fromTop(root, number(env, o, "x", 0), number(env, o, "y", 0), number(env, o, "width", 0),
+                             number(env, o, "height", 0))
+                   : from;
+  double radius = show ? number(env, o, "radius", 10) : fromRadius;
+  animateRadius(p.layer, radius, seconds, curve);
+  [NSAnimationContext runAnimationGroup:^(NSAnimationContext* context) {
+    context.duration = seconds;
+    context.timingFunction = curve;
+    context.allowsImplicitAnimation = YES;
+    p.animator.frame = to;
+    // Shown at once; going, it fades over the last part of the way.
+    if (show) p.alphaValue = 1;
+  } completionHandler:^{
+    if (show || generation != panelGeneration) return;
+    [NSAnimationContext runAnimationGroup:^(NSAnimationContext* context) {
+      context.duration = 0.08;
+      p.animator.alphaValue = 0;
+    } completionHandler:^{
+      if (generation == panelGeneration) [p removeFromSuperview];
+    }];
+  }];
+  return result(env, true);
+}
+
 static void setNumber(napi_env env, napi_value object, const char* key, double value) {
   napi_value v;
   napi_create_double(env, value, &v);
@@ -452,5 +545,7 @@ __attribute__((visibility("default"))) napi_value napi_register_module_v1(napi_e
   napi_set_named_property(env, exports, "shape", fn);
   napi_create_function(env, "notches", 7, notches, NULL, &fn);
   napi_set_named_property(env, exports, "notches", fn);
+  napi_create_function(env, "panel", 5, panel, NULL, &fn);
+  napi_set_named_property(env, exports, "panel", fn);
   return exports;
 }
