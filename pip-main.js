@@ -54,7 +54,7 @@ html, body { margin: 0; height: 100%; background: transparent; overflow: hidden;
 #menu { position: absolute; inset: 0; border-radius: var(--radius); overflow: hidden; display: flex; }
 #menu::before { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
   background: rgb(var(--frame) / calc(var(--darkness) * 0.25));
-  box-shadow: inset 0 0 0 1px rgb(var(--ink) / 0.12); }
+  box-shadow: inset 0 0 0 0.5px rgb(var(--ink) / 0.1); }
 #list { position: relative; flex: 1; overflow-y: auto; padding: 5px; scrollbar-width: none;
   -webkit-mask-image: linear-gradient(transparent, black 10px, black calc(100% - 10px), transparent); }
 .group { padding: 7px 8px 3px 24px; color: rgb(var(--ink) / 0.42); font-size: 11px; font-weight: 600;
