@@ -47,6 +47,8 @@ const SWITCH = {
   /** Stepping through the roadmap: the pages slide side by side, a page's width (plus gap px) apart. */
   sideways: { duration: 460, gap: 24, ease: "cubic-bezier(0.32, 0.72, 0, 1)" },
 }
+/** How much the page fades when pulled as far as it goes past its end. */
+const OVERSCROLL_FADE = 0.4
 /** How long a scroll hitting the page's end waits for the trackpad's touch-down before it's taken as a flick's momentum (ms). */
 const TOUCH_WAIT_MS = 40
 /** How long a beam takes to go round the edge (styles.css's muta-beam-turn), and how many show at once. */
@@ -1872,8 +1874,13 @@ module.exports = class extends Plugin {
       return page && page.querySelector(".markdown-preview-sizer")
     }
     const target = () => Math.sign(raw) * rubberBand(Math.abs(raw), OVERSCROLL_MAX)
+    // The page fades a little the further it's pulled, as if pulled away from you.
+    const fade = (px) => `${1 - OVERSCROLL_FADE * Math.min(Math.abs(px) / OVERSCROLL_MAX, 1)}`
     const draw = () => {
-      if (el) el.style.transform = Math.abs(shown) > 0.05 ? `translateY(${shown}px)` : ""
+      if (!el) return
+      const out = Math.abs(shown) > 0.05
+      el.style.transform = out ? `translateY(${shown}px)` : ""
+      el.style.opacity = out ? fade(shown) : ""
     }
     const glide = (now) => {
       frame = 0
@@ -1900,7 +1907,7 @@ module.exports = class extends Plugin {
       shown = 0
       draw()
       if (!el || !from || reduceMotion() || (quick && Math.abs(from) < 2)) return
-      el.animate([{ transform: `translateY(${from}px)` }, { transform: "none" }], {
+      el.animate([{ transform: `translateY(${from}px)`, opacity: fade(from) }, { transform: "none", opacity: 1 }], {
         duration: 520,
         easing: "cubic-bezier(0.32, 0.72, 0, 1)",
       })
@@ -1976,7 +1983,7 @@ module.exports = class extends Plugin {
               el.animate(
                 [
                   { transform: "none", easing: "cubic-bezier(0.25, 0.8, 0.4, 1)" },
-                  { transform: `translateY(${past}px)`, offset: 0.3, easing: "cubic-bezier(0.32, 0.72, 0, 1)" },
+                  { transform: `translateY(${past}px)`, opacity: fade(past), offset: 0.3, easing: "cubic-bezier(0.32, 0.72, 0, 1)" },
                   { transform: "none" },
                 ],
                 { duration: BOUNCE_MS }
