@@ -26,8 +26,12 @@ html.muta-root body.muta-window .mod-root {
   /* The bottom and right edges grow the same way: into the switcher and the section rail. */
   --pip-bottom-bar: 36px;
   --pip-rail: 19px;
-  /* Popouts are nearly solid: a CSS blur over the window's glass disturbs the glass under it. */
-  --pip-popout-bg: rgb(36 36 38 / 0.96);
+  /*
+   * Popouts are solid: a CSS blur over the window's glass disturbs the glass
+   * under it, and in a see-through window even a nearly solid one lets the
+   * page's text show through.
+   */
+  --pip-popout-bg: rgb(30 30 32);
   --pip-popout-border: rgb(255 255 255 / 0.09);
   --pip-popout-shadow: 0 8px 24px rgb(0 0 0 / 0.4);
   --pip-bottom: var(--pip-frame);
@@ -45,7 +49,7 @@ html.muta-root body.muta-window .mod-root {
 }
 /* Light: a pale frame, a lighter panel, dark ink. Docked at the notch it stays dark. */
 .muta-window.theme-light {
-  --pip-popout-bg: rgb(250 250 252 / 0.97);
+  --pip-popout-bg: rgb(250 250 252);
   --pip-popout-border: rgb(0 0 0 / 0.1);
   --pip-popout-shadow: 0 8px 24px rgb(0 0 0 / 0.16);
   --muta-frame: 242 242 245;
@@ -483,7 +487,12 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
   font-weight: 500;
 }
 
-/* The roadmap list, popped out above the switcher. */
+/*
+ * The roadmap list, popped out above the switcher: a menu in the window's own
+ * style, its corners concentric with the page's, grey highlights like the
+ * bars' buttons (not the theme's accent), the current page ticked, and each
+ * phase and area set off by a hairline.
+ */
 .muta-switcher-popout {
   position: fixed;
   z-index: 25;
@@ -492,10 +501,12 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
   width: min(300px, calc(100vw - 24px));
   height: min(250px, calc(100vh - var(--pip-top) - var(--pip-bottom) - 20px));
   display: flex;
-  border-radius: 11px;
+  border-radius: calc(var(--pip-radius) - var(--pip-frame));
   background: var(--pip-popout-bg);
   border: 1px solid var(--pip-popout-border);
-  box-shadow: var(--pip-popout-shadow);
+  box-shadow:
+    inset 0 1px 0 rgb(var(--muta-ink) / 0.05),
+    var(--pip-popout-shadow);
   font-size: 12px;
   opacity: 0;
   pointer-events: none;
@@ -520,30 +531,50 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
   -webkit-mask-image: linear-gradient(transparent, black 10px, black calc(100% - 10px), transparent);
 }
 .muta-switcher-group {
-  padding: 8px 8px 3px;
-  color: var(--text-faint);
+  padding: 7px 8px 3px 24px;
+  color: rgb(var(--muta-ink) / 0.4);
   font-size: 11px;
-  font-weight: 500;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.muta-switcher-group:not(:first-child) {
+  margin-top: 5px;
+  border-top: 1px solid rgb(var(--muta-ink) / 0.08);
+  padding-top: 8px;
 }
 .muta-switcher-item {
-  padding: 3px 8px;
-  border-radius: 6px;
-  color: var(--text-muted);
+  position: relative;
+  padding: 4px 8px 4px 24px;
+  border-radius: 7px;
+  color: rgb(var(--muta-ink) / 0.82);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .muta-switcher-item.is-sub {
-  padding-left: 22px;
+  padding-left: 38px;
 }
 .muta-switcher-item:hover {
-  background: rgb(var(--muta-ink) / 0.08);
-  color: var(--text-normal);
+  background: rgb(var(--muta-ink) / 0.1);
+  color: rgb(var(--muta-ink) / 0.95);
 }
 .muta-switcher-item.is-current {
-  background: color-mix(in srgb, var(--interactive-accent) 30%, transparent);
-  color: var(--text-normal);
-  font-weight: 500;
+  color: rgb(var(--muta-ink) / 0.95);
+  font-weight: 600;
+}
+/* The current page's tick, where a macOS menu puts it. */
+.muta-switcher-item.is-current::before {
+  content: "";
+  position: absolute;
+  left: 8px;
+  top: 50%;
+  width: 10px;
+  height: 10px;
+  translate: 0 -50%;
+  background: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M1.5 5.2 4 7.6 8.6 2.4' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
 }
 
 /* Rail: the page's scroll position and a mark per section in the right edge. */
