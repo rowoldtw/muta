@@ -661,6 +661,95 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
 }
 
 /*
+ * An agent at work in the vault (main.js): Siri's colours glow round the
+ * window's inner edge, slowly turning, a thin bright line and a soft band
+ * inside it. Docked at the notch, round the page below it.
+ */
+@property --muta-glow-angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+.muta-agent-glow {
+  display: none;
+}
+.muta-window.has-agent .muta-agent-glow {
+  position: fixed;
+  inset: 0;
+  z-index: 35;
+  display: block;
+  pointer-events: none;
+  animation: muta-glow-in 600ms ease-out;
+}
+.muta-agent-glow::before,
+.muta-agent-glow::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: var(--pip-radius);
+  background: conic-gradient(
+    from var(--muta-glow-angle),
+    #ff5fa2,
+    #ff9f5a,
+    #ffd66b,
+    #7b8cff,
+    #49c6ff,
+    #c86bff,
+    #ff5fa2
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  animation: muta-glow-turn 6s linear infinite;
+}
+.muta-agent-glow::before {
+  padding: 1.5px;
+  opacity: 0.85;
+}
+.muta-agent-glow::after {
+  padding: 8px;
+  filter: blur(10px);
+  opacity: 0.55;
+}
+/* Docked, the window's top is the screen's edge: the glow comes in below the top bar. */
+.muta-window.is-docked .muta-agent-glow {
+  -webkit-mask: linear-gradient(to bottom, transparent var(--muta-notch-height, 38px), #000 calc(var(--muta-notch-height, 38px) + 48px));
+}
+.muta-window.is-docked .muta-agent-glow::before,
+.muta-window.is-docked .muta-agent-glow::after {
+  border-radius: 0 0 var(--pip-radius) var(--pip-radius);
+}
+@keyframes muta-glow-turn {
+  to {
+    --muta-glow-angle: 360deg;
+  }
+}
+@keyframes muta-glow-in {
+  from {
+    opacity: 0;
+  }
+}
+/* Follow along: only while an agent works; lit while following. */
+.muta-window .muta-follow {
+  display: none !important;
+}
+.muta-window.has-agent .muta-follow {
+  display: flex !important;
+}
+.muta-window .muta-follow.is-active {
+  color: var(--interactive-accent) !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  .muta-agent-glow::before,
+  .muta-agent-glow::after,
+  .muta-window.has-agent .muta-agent-glow {
+    animation: none;
+  }
+}
+
+/*
  * Reduce transparency (System Settings › Accessibility › Display): solid
  * backgrounds instead of see-through ones. macOS draws its own glass and
  * blur solid then too.

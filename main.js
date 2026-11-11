@@ -120,6 +120,14 @@ const DEFAULTS = {
   overscroll: true,
   /** Links to the previewed note turn yellow in Obsidian's other windows. */
   markPreviewed: true,
+  /** A glow runs round the window's inner edge while a local agent works in this vault. */
+  agentIndicator: true,
+  /** Follow along as soon as an agent starts working, instead of with the top bar's button. */
+  agentAutoFollow: false,
+  /** Which agents to watch for. */
+  agentClaude: true,
+  agentCodex: true,
+  agentOpencode: true,
 }
 
 /**
@@ -158,11 +166,344 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const remote = () => require("@electron/remote")
 const alive = (w) => !!(w && !w.isDestroyed())
 
+// ── Agents: local coding agents at work in this vault ──────────────────
+//
+// Claude Code, Codex and OpenCode each keep a record of their sessions on
+// disk: Claude Code a JSONL file per session under ~/.claude/projects (named
+// after the folder it runs in), Codex one per session under ~/.codex/sessions
+// (by date), OpenCode a SQLite database. A session written to in the last few
+// seconds is working; the files it has edited (Claude Code's Edit and Write,
+// Codex's patches, OpenCode's edit and write) say which notes. It's working
+// in this vault when it runs from inside the vault or has just edited a note
+// in it, including notes the vault links to from elsewhere (a symlinked
+// folder, as the test vault's features/ is).
+
+/** How often the agents' records are checked (ms). */
+const AGENT_POLL_MS = 1500
+/** A session written to this recently is working (ms): agents write between steps, so a long step stays quiet a while. */
+const AGENT_ACTIVE_MS = 45000
+/** An edit this recent says which note an agent is working on (ms). */
+const AGENT_EDIT_MS = 300000
+/** How much of the end of a session's record is read for its latest edits (bytes). */
+const AGENT_TAIL = 192 * 1024
+const AGENT_NAMES = { claude: "Claude Code", codex: "Codex", opencode: "OpenCode" }
+
+class AgentWatch {
+  /** onChange({ kind, name, edit: { file, text, at } | null } | null): the agent at work in the vault, or none. */
+  constructor(plugin, onChange) {
+    this.plugin = plugin
+    this.onChange = onChange
+    this.timer = null
+    this.busy = false
+    this.key = ""
+    this.state = null
+    this.roots = null
+  }
+
+  start() {
+    if (this.timer) return
+    this.timer = window.setInterval(() => this.poll(), AGENT_POLL_MS)
+    this.poll()
+  }
+
+  stop() {
+    window.clearInterval(this.timer)
+    this.timer = null
+    this.set(null)
+  }
+
+  set(state) {
+    const e = state && state.edit
+    const key = state ? `${state.kind}|${e ? e.file.path + "|" + e.at : ""}` : ""
+    if (key === this.key) return
+    this.key = key
+    this.state = state
+    this.onChange(state)
+  }
+
+  async poll() {
+    if (this.busy) return
+    this.busy = true
+    try {
+      const now = Date.now()
+      if (!this.roots || now - this.roots.at > 30000) this.roots = this.vaultRoots()
+      const s = this.plugin.settings
+      const sessions = [
+        ...(s.agentClaude ? this.claude(now) : []),
+        ...(s.agentCodex ? this.codex(now) : []),
+        ...(s.agentOpencode ? await this.opencode(now) : []),
+      ]
+      let best = null
+      for (const session of sessions) {
+        const edits = session.edits
+          .filter((e) => now - e.at < AGENT_EDIT_MS)
+          .map((e) => ({ ...e, file: this.toVault(e.path) }))
+          .filter((e) => e.file)
+          .sort((a, b) => b.at - a.at)
+        if (!edits.length && !this.inVault(session.cwd)) continue
+        const found = { kind: session.kind, name: AGENT_NAMES[session.kind], at: session.at, edit: edits[0] || null }
+        const when = (x) => (x.edit ? x.edit.at : x.at)
+        if (!best || when(found) > when(best)) best = found
+      }
+      this.set(best)
+    } catch (error) {
+      console.error("Muta: checking for agents", error)
+    } finally {
+      this.busy = false
+    }
+  }
+
+  /** The vault's folder, and the folders and files it links to from elsewhere (two levels deep). */
+  vaultRoots() {
+    const fs = require("fs")
+    const path = require("path")
+    const base = this.plugin.app.vault.adapter.getBasePath()
+    const links = []
+    const scan = (dir, rel, depth) => {
+      let names = []
+      try {
+        names = fs.readdirSync(dir)
+      } catch {}
+      for (const name of names) {
+        if (name.startsWith(".")) continue
+        const full = path.join(dir, name)
+        const at = rel ? `${rel}/${name}` : name
+        try {
+          const st = fs.lstatSync(full)
+          if (st.isSymbolicLink()) links.push([at, fs.realpathSync(full)])
+          else if (st.isDirectory() && depth < 1) scan(full, at, depth + 1)
+        } catch {}
+      }
+    }
+    scan(base, "", 0)
+    let real = base
+    try {
+      real = fs.realpathSync(base)
+    } catch {}
+    return { at: Date.now(), real, links }
+  }
+
+  /** Whether folder cwd is inside the vault (or a folder it links to). */
+  inVault(cwd) {
+    if (!cwd) return false
+    const real = this.realpath(cwd)
+    const { roots } = this
+    return within(real, roots.real) || roots.links.some(([, target]) => within(real, target))
+  }
+
+  /** The vault's Markdown note at file path p, or null. */
+  toVault(p) {
+    if (!p) return null
+    const real = this.realpath(p)
+    const { roots } = this
+    let rel = null
+    if (within(real, roots.real)) rel = real.slice(roots.real.length + 1)
+    else
+      for (const [at, target] of roots.links)
+        if (within(real, target)) {
+          rel = real === target ? at : `${at}/${real.slice(target.length + 1)}`
+          break
+        }
+    const file = rel && this.plugin.app.vault.getAbstractFileByPath(rel)
+    return file instanceof TFile && file.extension === "md" ? file : null
+  }
+
+  realpath(p) {
+    try {
+      return require("fs").realpathSync(p)
+    } catch {
+      return p
+    }
+  }
+
+  /** The last AGENT_TAIL bytes of file f, as lines (the first, cut off, dropped). */
+  tail(f) {
+    const fs = require("fs")
+    const fd = fs.openSync(f, "r")
+    try {
+      const size = fs.fstatSync(fd).size
+      const len = Math.min(size, AGENT_TAIL)
+      const buf = Buffer.alloc(len)
+      fs.readSync(fd, buf, 0, len, size - len)
+      const lines = buf.toString("utf8").split("\n")
+      return len < size ? lines.slice(1) : lines
+    } finally {
+      fs.closeSync(fd)
+    }
+  }
+
+  /** Session files under dir (and its folders, depth deep) written to in the last AGENT_ACTIVE_MS. */
+  recent(dir, now, test, depth = 0) {
+    const fs = require("fs")
+    const path = require("path")
+    const out = []
+    let names = []
+    try {
+      names = fs.readdirSync(dir)
+    } catch {
+      return out
+    }
+    for (const name of names) {
+      const full = path.join(dir, name)
+      try {
+        const st = fs.statSync(full)
+        if (st.isDirectory() && depth > 0) out.push(...this.recent(full, now, test, depth - 1))
+        else if (st.isFile() && test(name) && now - st.mtimeMs < AGENT_ACTIVE_MS) out.push({ file: full, at: st.mtimeMs })
+      } catch {}
+    }
+    return out
+  }
+
+  /** Claude Code: its project folders named after the vault, a folder in it or one around it. */
+  claude(now) {
+    const path = require("path")
+    const fs = require("fs")
+    const dir = path.join(require("os").homedir(), ".claude", "projects")
+    const name = (p) => p.replace(/[^a-zA-Z0-9]/g, "-")
+    const roots = [this.roots.real, ...this.roots.links.map(([, target]) => target)].map(name)
+    let folders = []
+    try {
+      folders = fs.readdirSync(dir).filter((f) => roots.some((r) => f.startsWith(r) || r.startsWith(f + "-")))
+    } catch {
+      return []
+    }
+    const sessions = []
+    for (const folder of folders)
+      for (const { file, at } of this.recent(path.join(dir, folder), now, (n) => n.endsWith(".jsonl"))) {
+        const session = { kind: "claude", cwd: null, at, edits: [] }
+        for (const line of this.tail(file)) {
+          if (!line.includes('"cwd"') && !line.includes('"tool_use"')) continue
+          let d
+          try {
+            d = JSON.parse(line)
+          } catch {
+            continue
+          }
+          if (d.cwd) session.cwd = d.cwd
+          const content = d.message && Array.isArray(d.message.content) ? d.message.content : []
+          for (const c of content) {
+            if (c.type !== "tool_use" || !c.input || !/^(Edit|MultiEdit|Write)$/.test(c.name)) continue
+            const input = c.input
+            const text = input.new_string || (input.edits && input.edits[0] && input.edits[0].new_string) || input.content || ""
+            session.edits.push({ path: input.file_path, text, at: Date.parse(d.timestamp) || at })
+          }
+        }
+        sessions.push(session)
+      }
+    return sessions
+  }
+
+  /** Codex: today's and yesterday's sessions, with the files their patches add or update. */
+  codex(now) {
+    const path = require("path")
+    const base = path.join(require("os").homedir(), ".codex", "sessions")
+    const day = (t) => {
+      const d = new Date(t)
+      return path.join(base, String(d.getFullYear()), String(d.getMonth() + 1).padStart(2, "0"), String(d.getDate()).padStart(2, "0"))
+    }
+    const files = [...new Set([day(now), day(now - 86400000)])].flatMap((dir) =>
+      this.recent(dir, now, (n) => n.startsWith("rollout-") && n.endsWith(".jsonl"))
+    )
+    const sessions = []
+    for (const { file, at } of files) {
+      const session = { kind: "codex", cwd: this.codexCwd(file), at, edits: [] }
+      for (const line of this.tail(file)) {
+        if (!line.includes("File: ")) continue
+        let d
+        try {
+          d = JSON.parse(line)
+        } catch {
+          continue
+        }
+        const p = d.payload || {}
+        const call = typeof p.input === "string" ? p.input : typeof p.arguments === "string" ? p.arguments : ""
+        // The patch may be inside a script, still escaped: undo that first.
+        const patch = call.includes("\\n") ? call.replace(/\\n/g, "\n").replace(/\\"/g, '"') : call
+        const re = /\*\*\* (?:Update|Add) File: ([^\n]+)\n([\s\S]*?)(?=\n\*\*\* |$)/g
+        let m
+        while ((m = re.exec(patch))) {
+          const added = m[2].split("\n").find((l) => l.startsWith("+") && l.slice(1).trim())
+          session.edits.push({ path: m[1].trim(), text: added ? added.slice(1) : "", at: Date.parse(d.timestamp) || at })
+        }
+      }
+      sessions.push(session)
+    }
+    return sessions
+  }
+
+  /** The folder a Codex session runs in, from its first line. */
+  codexCwd(file) {
+    const fs = require("fs")
+    try {
+      const fd = fs.openSync(file, "r")
+      const buf = Buffer.alloc(16384)
+      const n = fs.readSync(fd, buf, 0, buf.length, 0)
+      fs.closeSync(fd)
+      const m = buf.toString("utf8", 0, n).match(/"cwd":"((?:[^"\\]|\\.)*)"/)
+      return m ? JSON.parse(`"${m[1]}"`) : null
+    } catch {
+      return null
+    }
+  }
+
+  /** OpenCode: its database, through macOS's sqlite3. */
+  async opencode(now) {
+    const path = require("path")
+    const db = path.join(require("os").homedir(), ".local", "share", "opencode", "opencode.db")
+    if (!require("fs").existsSync(db)) return []
+    const query = (sql) =>
+      new Promise((resolve) =>
+        require("child_process").execFile("/usr/bin/sqlite3", ["-readonly", "-json", db, sql], { timeout: 1000 }, (err, out) => {
+          try {
+            resolve(err || !out.trim() ? [] : JSON.parse(out))
+          } catch {
+            resolve([])
+          }
+        })
+      )
+    const rows = await query(`select id, directory, time_updated from session where time_updated > ${Math.floor(now - AGENT_ACTIVE_MS)}`)
+    const sessions = []
+    for (const row of rows) {
+      if (!/^[\w-]+$/.test(row.id)) continue
+      const session = { kind: "opencode", cwd: row.directory, at: row.time_updated, edits: [] }
+      const parts = await query(
+        `select data, time_updated from part where session_id = '${row.id}' and data like '%"filePath"%' order by time_updated desc limit 10`
+      )
+      for (const part of parts) {
+        try {
+          const d = JSON.parse(part.data)
+          const input = d.state && d.state.input
+          if (d.type === "tool" && /^(edit|write)$/.test(d.tool) && input && input.filePath)
+            session.edits.push({ path: input.filePath, text: input.newString || input.content || "", at: part.time_updated })
+        } catch {}
+      }
+      sessions.push(session)
+    }
+    return sessions
+  }
+}
+
+/** The line of content where text (its first non-empty line) is, or -1. */
+function lineOf(content, text) {
+  const first = text.split("\n").map((l) => l.trim()).find(Boolean)
+  if (!first) return -1
+  const at = content.indexOf(first)
+  return at < 0 ? -1 : content.slice(0, at).split("\n").length - 1
+}
+
+/** Whether path p is folder dir or inside it. */
+const within = (p, dir) => p === dir || p.startsWith(dir + "/")
+
 module.exports = class extends Plugin {
   async onload() {
     this.settings = Object.assign({}, DEFAULTS, (await this.loadData()) || (await this.fromFloatingPreview()))
     this.addSettingTab(new MutaSettings(this.app, this))
     this.patchMenus()
+    // A local agent at work in this vault: a glow, and following along (agents).
+    this.agent = null
+    this.following = false
+    this.agents = new AgentWatch(this, (state) => this.onAgent(state))
+    if (this.settings.agentIndicator) this.agents.start()
     this.leaf = null
     this.win = null
     this.next = null
@@ -220,7 +561,59 @@ module.exports = class extends Plugin {
   }
 
   onunload() {
+    this.agents.stop()
     this.closeWindow()
+  }
+
+  // ── Agents: a glow while one works in the vault, and following along ──
+
+  /** An agent started or stopped working in the vault, or moved to another note. */
+  onAgent(state) {
+    const started = state && !this.agent
+    this.agent = state
+    // Following stays on (the button shows again with the next agent) until it's pressed.
+    if (started && this.settings.agentAutoFollow) this.following = true
+    this.showAgent()
+    if (this.following && state && state.edit) this.followEdit(state.edit)
+  }
+
+  /** The window's glow and follow button, for the agent at work (styles.css). */
+  showAgent() {
+    const doc = this.leaf && this.leaf.view.containerEl.ownerDocument
+    if (!doc || doc === document) return
+    const { agent } = this
+    doc.body.classList.toggle("has-agent", !!agent)
+    doc.body.classList.toggle("is-following", !!(agent && this.following))
+    const button = this.leaf.view.mutaFollow
+    if (button) {
+      const label = agent
+        ? this.following
+          ? `Stop following ${agent.name}`
+          : `Follow ${agent.name}`
+        : "Follow along"
+      button.setAttribute("aria-label", label)
+      button.toggleClass("is-active", this.following)
+    }
+  }
+
+  /** Follows the agent, or stops: following, the window shows the note it's changing, at the change. */
+  toggleFollow() {
+    this.following = !this.following
+    this.showAgent()
+    if (this.following && this.agent && this.agent.edit) this.followEdit(this.agent.edit, true)
+  }
+
+  /** Shows the note an edit changed, scrolled to it once the page is in. */
+  async followEdit(edit, now = false) {
+    if (!now && this.followed === `${edit.file.path}|${edit.at}`) return
+    this.followed = `${edit.file.path}|${edit.at}`
+    this.schedule(edit.file)
+    for (let i = 0; i < 20 && !(this.leaf && this.leaf.view.file === edit.file); i++)
+      await new Promise((resolve) => window.setTimeout(resolve, 50))
+    if (!this.leaf || this.leaf.view.file !== edit.file) return
+    const line = edit.text ? lineOf(await this.app.vault.read(edit.file), edit.text) : -1
+    const mode = this.leaf.view.currentMode
+    if (line >= 0 && mode && mode.applyScroll) mode.applyScroll(line)
   }
 
   /** Shows the hovered file at once; while one is loading, only the latest hover is kept. */
@@ -268,6 +661,8 @@ module.exports = class extends Plugin {
     await leaf.openFile(file, { active: false, state: { mode: "preview" } })
     this.attach()
     this.addCloseButton()
+    this.addFollowButton()
+    this.showAgent()
     const raf = leaf.view.containerEl.win || window
     if (this.updateFades) raf.setTimeout(this.updateFades, 50)
     this.collapsePending = true
@@ -963,6 +1358,8 @@ module.exports = class extends Plugin {
         this.pip.setSwipes(this.settings.swipeToMove)
       }
     }
+    if (this.settings.agentIndicator) this.agents.start()
+    else this.agents.stop()
     this.markCurrent(this.isOpen() ? this.leaf.view.file : null)
   }
 
@@ -1093,6 +1490,14 @@ module.exports = class extends Plugin {
    * A close button in the top bar's right corner (the next hovered link opens
    * the window again), and the page's menu moved to its left corner.
    */
+  /** Follow along: shown while an agent works in the vault (styles.css). */
+  addFollowButton() {
+    const view = this.leaf && this.leaf.view
+    if (!view || !view.addAction || view.mutaFollow) return
+    view.mutaFollow = view.addAction("scan-eye", "Follow along", () => this.toggleFollow())
+    view.mutaFollow.addClass("muta-follow")
+  }
+
   addCloseButton() {
     const view = this.leaf && this.leaf.view
     if (!view || !view.addAction || view.mutaClose) return
@@ -1120,6 +1525,8 @@ module.exports = class extends Plugin {
     const gestures = new Set()
     this.onGesture = (handler) => gestures.add(handler)
     doc.defaultView.mutaGesture = (phase) => gestures.forEach((handler) => handler(phase))
+    // A glow round the inner edge while an agent works in the vault.
+    doc.body.createDiv({ cls: "muta-agent-glow" })
     this.attachEdges(doc)
     this.attachOverscroll(doc)
     this.attachDrag(doc)
@@ -1606,6 +2013,42 @@ class MutaSettings extends PluginSettingTab {
           .setName("Overscroll")
           .setDesc("Pages pull past their top and bottom and spring back.")
           .addToggle((t) => t.setValue(plugin.settings.overscroll).onChange((v) => save("overscroll", v)))
+      )
+
+    new SettingGroup(containerEl)
+      .setHeading("AI")
+      .addSetting((s) =>
+        s
+          .setName("Show when an agent is working")
+          .setDesc(
+            "A glow runs round the window's inner edge while a local agent (Claude Code, Codex or OpenCode) " +
+              "is working in this vault, and a follow button appears in the top bar."
+          )
+          .addToggle((t) => t.setValue(plugin.settings.agentIndicator).onChange((v) => save("agentIndicator", v)))
+      )
+      .addSetting((s) =>
+        s
+          .setName("Follow along automatically")
+          .setDesc("Show each note an agent changes, at the change, as soon as it starts working, without pressing follow.")
+          .addToggle((t) => t.setValue(plugin.settings.agentAutoFollow).onChange((v) => save("agentAutoFollow", v)))
+      )
+      .addSetting((s) =>
+        s
+          .setName("Claude Code")
+          .setDesc("Watch Claude Code's sessions (~/.claude/projects).")
+          .addToggle((t) => t.setValue(plugin.settings.agentClaude).onChange((v) => save("agentClaude", v)))
+      )
+      .addSetting((s) =>
+        s
+          .setName("Codex")
+          .setDesc("Watch Codex's sessions (~/.codex/sessions).")
+          .addToggle((t) => t.setValue(plugin.settings.agentCodex).onChange((v) => save("agentCodex", v)))
+      )
+      .addSetting((s) =>
+        s
+          .setName("OpenCode")
+          .setDesc("Watch OpenCode's sessions (~/.local/share/opencode).")
+          .addToggle((t) => t.setValue(plugin.settings.agentOpencode).onChange((v) => save("agentOpencode", v)))
       )
 
     new SettingGroup(containerEl)
