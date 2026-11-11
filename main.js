@@ -47,20 +47,6 @@ const SWITCH = {
   /** Stepping through the roadmap: the pages slide side by side, a page's width (plus gap px) apart. */
   sideways: { duration: 460, gap: 24, ease: "cubic-bezier(0.32, 0.72, 0, 1)" },
 }
-/** The bottom bar's menu: its corners, and how it morphs open (out of its button) and closed (back in). */
-const MENU = {
-  /** Its largest size, and how far in from the window's edges (and below the top bar) it keeps. */
-  width: 300,
-  height: 260,
-  inset: 6,
-  top: 44,
-  /** How far below its button it reaches. */
-  below: 6,
-  /** Concentric with the window's corners (16px), 6px in. */
-  radius: 10,
-  open: { ms: 380, curve: [0.32, 0.72, 0, 1] },
-  close: { ms: 240, curve: [0.4, 0, 0.2, 1] },
-}
 /** How long a beam takes to go round the edge (styles.css's muta-beam-turn), and how many show at once. */
 const BEAM_TURN_MS = 2600
 const MAX_BEAMS = 4
@@ -682,24 +668,6 @@ class AgentWatch {
   }
 }
 
-/**
- * A clip-path for an element whose box is around (page coordinates) with a
- * hole of box c (corners c.r) cut out of it: the same commands whatever the
- * boxes, so CSS can morph one into another.
- */
-function holePath(around, c) {
-  const x = c.x - around.x
-  const y = c.y - around.y
-  const r = Math.max(0, Math.min(c.r, c.width / 2, c.height / 2))
-  const outer = `M0 0H${around.width}V${around.height}H0Z`
-  const hole =
-    `M${x + r} ${y}H${x + c.width - r}A${r} ${r} 0 0 1 ${x + c.width} ${y + r}` +
-    `V${y + c.height - r}A${r} ${r} 0 0 1 ${x + c.width - r} ${y + c.height}` +
-    `H${x + r}A${r} ${r} 0 0 1 ${x} ${y + c.height - r}` +
-    `V${y + r}A${r} ${r} 0 0 1 ${x + r} ${y}Z`
-  return `path(evenodd, "${outer} ${hole}")`
-}
-
 /** The line of content where text (its first non-empty line) is, or -1. */
 function lineOf(content, text) {
   const first = text.split("\n").map((l) => l.trim()).find(Boolean)
@@ -1126,11 +1094,6 @@ module.exports = class extends Plugin {
 
   buildSwitcher(doc) {
     const el = doc.body.createDiv({ cls: "muta-switcher" })
-    // The roadmap list pops out above the bar, over the page.
-    const popout = doc.body.createDiv({ cls: "muta-switcher-popout" })
-    const list = popout.createDiv({ cls: "muta-switcher-list" })
-    // The button's name, where the button was, while it turns into the menu.
-    const ghost = popout.createDiv({ cls: "muta-switcher-ghost" })
     const bar = el.createDiv({ cls: "muta-switcher-bar" })
     const prev = bar.createEl("button", { cls: "muta-switcher-step", attr: { "aria-label": "Previous feature", "data-tooltip-position": "top" } })
     setIcon(prev, "chevron-left")
@@ -1157,176 +1120,59 @@ module.exports = class extends Plugin {
     doc.addEventListener(
       "pointerdown",
       (event) => {
-        if (popout.contains(event.target) || title.contains(event.target)) return
-        this.closeMenu()
+        if (!title.contains(event.target)) this.closeMenu()
       },
       true
     )
-    // Going into the notch (pip-main.js), it closes at once.
-    doc.defaultView.mutaCloseMenu = (now) => this.closeMenu(now)
-    return { el, popout, list, ghost, title, label, name }
+    // The menu is its own window (pip-main.js): a pick goes there, and closing
+    // keeps the bottom bar open until the menu is back in its button.
+    const win = doc.defaultView
+    win.mutaMenuPick = (index) => this.go(index)
+    win.mutaMenuClosed = (ms) => {
+      body.classList.remove("is-switcher-open")
+      body.classList.add("is-menu-closing")
+      win.clearTimeout(this.menuClosing)
+      this.menuClosing = win.setTimeout(() => body.classList.remove("is-menu-closing"), ms)
+    }
+    return { el, title, label, name }
   }
 
   /**
-   * The bottom bar's menu morphs out of the name's button: its outline grows
-   * from the button's to the menu's (a clip on the menu, laid out at its full
-   * size), its list fading in as it does. With glass.node, a panel of macOS's
-   * own menu material grows behind it in step (pip-main.js's panel()), seen
-   * through a hole of the same shape in the page and the frame's tint.
+   * The bottom bar's menu: the name's button grows into it, a small window of
+   * its own over the preview (pip-main.js's openMenu()), centred on the
+   * button so it straddles the window's bottom edge, over macOS's menu
+   * material. It closes when the cursor leaves it, on a click elsewhere, or
+   * on a pick.
    */
-  openMenu() {
+  async openMenu() {
     const sw = this.ui && this.ui.switcher
-    if (!sw) return
+    if (!sw || !this.pip) return
     const doc = sw.el.ownerDocument
     const body = doc.body
+    const win = doc.defaultView
+    win.clearTimeout(this.menuClosing)
     body.classList.remove("is-menu-closing")
     body.classList.add("is-switcher-open")
-    this.fillSwitcher()
-    const material = !!(this.pip && this.pip.hasPanel()) && !doc.defaultView.matchMedia("(prefers-reduced-transparency: reduce)").matches
-    body.classList.toggle("has-menu-material", material)
-    const from = this.menuBox(sw.title, 6)
-    const to = this.placeMenu(from)
-    this.menu = { from, to, material }
-    this.morphMenu(from, to, MENU.open)
+    const items = await this.roadmap()
+    const current = this.leaf && this.leaf.view.file
+    const b = sw.title.getBoundingClientRect()
+    this.pip.openMenu({
+      button: { x: b.left, y: b.top, width: b.width, height: b.height },
+      items: items.map((item) => ({ group: item.group, name: item.file.basename, depth: item.depth || 0, current: item.file === current })),
+      name: sw.name.getText(),
+      font: win.getComputedStyle(sw.title).fontFamily,
+      dark: !body.classList.contains("theme-light") || body.classList.contains("is-docked"),
+      darkness: this.settings.darkness,
+      reduceMotion: reduceMotion(),
+    })
   }
 
-  /**
-   * Where the menu goes: the button grows into it where it is, so the menu
-   * sits over it, centred on it, down to just below it, as wide and tall as
-   * the window allows (over the bottom bar and the page, a few pixels in from
-   * the window's edges, its corners concentric with the window's).
-   */
-  placeMenu(button) {
-    const sw = this.ui.switcher
-    const doc = sw.el.ownerDocument
-    const body = doc.body
-    const win = body.classList.contains("is-docked")
-      ? body.getBoundingClientRect()
-      : { left: 0, top: 0, right: doc.documentElement.clientWidth, bottom: doc.documentElement.clientHeight }
-    const width = Math.min(MENU.width, win.right - win.left - 2 * MENU.inset)
-    const bottom = Math.min(button.y + button.height + MENU.below, win.bottom - MENU.inset)
-    const height = Math.min(MENU.height, bottom - win.top - MENU.top)
-    const x = Math.max(win.left + MENU.inset, Math.min(button.x + button.width / 2 - width / 2, win.right - MENU.inset - width))
-    const box = { x, y: bottom - height, width, height, r: MENU.radius }
-    // Laid out there (fixed, inside the docked window's body, which holds fixed children).
-    const origin = body.classList.contains("is-docked") ? win : { left: 0, top: 0 }
-    Object.assign(sw.popout.style, {
-      left: `${box.x - origin.left}px`,
-      top: `${box.y - origin.top}px`,
-      width: `${box.width}px`,
-      height: `${box.height}px`,
-      bottom: "auto",
-      translate: "none",
-    })
-    // The button's name, over where the button is.
-    sw.ghost.setText(sw.name.getText())
-    Object.assign(sw.ghost.style, {
-      left: `${button.x - box.x}px`,
-      top: `${button.y - box.y}px`,
-      width: `${button.width}px`,
-      height: `${button.height}px`,
-    })
-    return box
-  }
-
-  /** Shrinks the menu back into its button (at once with now), and takes it away. */
+  /** Shrinks the menu back into its button (at once with now). */
   closeMenu(now = false) {
-    const sw = this.ui && this.ui.switcher
-    const body = sw && sw.el.ownerDocument.body
+    const body = this.ui && this.ui.switcher.el.ownerDocument.body
     if (!body || !body.classList.contains("is-switcher-open")) return
-    body.classList.remove("is-switcher-open")
-    const menu = this.menu
-    this.menu = null
-    if (!menu) return
-    // The button may have moved (the bar's name changed width): back into where it is now.
-    const from = this.menuBox(sw.title, 6)
-    body.classList.add("is-menu-closing")
-    const timing = now ? { ...MENU.close, ms: 0 } : MENU.close
-    this.morphMenu(menu.to, from, timing, menu.material).then(() => {
-      if (body.classList.contains("is-switcher-open")) return
-      body.classList.remove("is-menu-closing", "has-menu-material")
-      this.clearMenuMorph()
-    })
-  }
-
-  /** el's box on the page, with corners of radius r. */
-  menuBox(el, r) {
-    const b = el.getBoundingClientRect()
-    return { x: b.left, y: b.top, width: b.width, height: b.height, r }
-  }
-
-  /**
-   * Morphs the menu's outline from box a to box b (timing: ms and the curve,
-   * as cubic-bezier points), the hole in the page and the native panel with
-   * it. Resolves once it's there.
-   */
-  morphMenu(a, b, timing, material = this.menu && this.menu.material) {
-    const sw = this.ui.switcher
-    const doc = sw.el.ownerDocument
-    const ms = reduceMotion() ? 0 : timing.ms
-    const easing = `cubic-bezier(${timing.curve.join(", ")})`
-    const options = { duration: ms, easing, fill: "forwards" }
-    const popout = sw.popout
-    const box = this.menuBox(popout, 0)
-    // The menu's clip, from its own box.
-    const inset = (c) =>
-      `inset(${c.y - box.y}px ${box.x + box.width - c.x - c.width}px ${box.y + box.height - c.y - c.height}px ${c.x - box.x}px round ${c.r}px)`
-    popout.getAnimations().forEach((x) => x.cancel())
-    const morph = popout.animate([{ clipPath: inset(a) }, { clipPath: inset(b) }], options)
-    sw.list.getAnimations().forEach((x) => x.cancel())
-    const opening = b.width > a.width
-    sw.list.animate([{ opacity: opening ? 0 : 1 }, { opacity: opening ? 1 : 0 }], {
-      duration: ms * (opening ? 0.7 : 0.5),
-      delay: opening ? ms * 0.3 : 0,
-      easing: "ease-out",
-      fill: "both",
-    })
-    // The button's name fades as the list comes in, and back as it goes.
-    sw.ghost.getAnimations().forEach((x) => x.cancel())
-    sw.ghost.animate([{ opacity: opening ? 1 : 0 }, { opacity: opening ? 0 : 1 }], {
-      duration: ms * 0.4,
-      delay: opening ? 0 : ms * 0.6,
-      easing: "ease-out",
-      fill: "both",
-    })
-    if (material) {
-      // The hole, in the frame's tint (the page's body) and the page panel.
-      const page = this.leaf && this.leaf.view.contentEl
-      const holes = [[doc.body, "::before", { x: 0, y: 0, width: doc.documentElement.clientWidth, height: doc.documentElement.clientHeight }]]
-      if (page) holes.push([page, null, this.menuBox(page, 0)])
-      // And the bottom bar, which the menu grows over.
-      holes.push([sw.el, null, this.menuBox(sw.el, 0)])
-      for (const [el, pseudo, around] of holes) {
-        const keyframes = [{ clipPath: holePath(around, a) }, { clipPath: holePath(around, b) }]
-        el.getAnimations({ subtree: !!pseudo }).filter((x) => x.id === "muta-hole").forEach((x) => x.cancel())
-        const hole = el.animate(keyframes, { ...options, pseudoElement: pseudo || undefined })
-        hole.id = "muta-hole"
-      }
-      const [x1, y1, x2, y2] = timing.curve
-      this.pip.panel({
-        show: b.width > a.width || b.height > a.height,
-        x: b.x, y: b.y, width: b.width, height: b.height, radius: b.r,
-        fromX: opening ? a.x : b.x, fromY: opening ? a.y : b.y,
-        fromWidth: opening ? a.width : b.width, fromHeight: opening ? a.height : b.height,
-        fromRadius: opening ? a.r : b.r,
-        seconds: ms / 1000, x1, y1, x2, y2,
-        dark: !doc.body.classList.contains("theme-light") || doc.body.classList.contains("is-docked"),
-      })
-    }
-    return morph.finished.then(() => {}, () => {})
-  }
-
-  /** Takes the menu's morph (its clip, and the hole) away once it's closed. */
-  clearMenuMorph() {
-    const sw = this.ui && this.ui.switcher
-    if (!sw) return
-    const doc = sw.el.ownerDocument
-    sw.popout.getAnimations().forEach((x) => x.cancel())
-    sw.list.getAnimations().forEach((x) => x.cancel())
-    sw.ghost.getAnimations().forEach((x) => x.cancel())
-    const page = this.leaf && this.leaf.view.contentEl
-    for (const el of [doc.body, page, sw.el])
-      if (el) el.getAnimations({ subtree: true }).filter((x) => x.id === "muta-hole").forEach((x) => x.cancel())
+    if (this.pip) this.pip.closeMenu(now)
+    else body.classList.remove("is-switcher-open")
   }
 
   async updateSwitcher(file) {
@@ -1336,44 +1182,6 @@ module.exports = class extends Plugin {
     const item = items[index]
     this.ui.switcher.name.setText(file.basename)
     this.ui.switcher.el.toggleClass("is-orphan", !item)
-    if (this.ui.switcher.el.ownerDocument.body.classList.contains("is-switcher-open"))
-      this.fillSwitcher()
-  }
-
-  /** The whole roadmap, grouped by phase and area, scrolled to the current feature. */
-  async fillSwitcher() {
-    const { list } = this.ui.switcher
-    const items = await this.roadmap()
-    const current = this.leaf && this.leaf.view.file
-    list.empty()
-    let group = ""
-    let currentEl = null
-    items.forEach((item, index) => {
-      const heading = item.group
-      if (heading !== group) {
-        group = heading
-        list.createDiv({ cls: "muta-switcher-group", text: heading })
-      }
-      const row = list.createDiv({
-        cls: "muta-switcher-item",
-        text: item.file.basename,
-      })
-      if (item.depth) row.addClass("is-sub")
-      if (item.file === current) {
-        row.addClass("is-current")
-        currentEl = row
-      }
-      row.addEventListener("click", () => {
-        this.closeMenu()
-        this.go(index)
-      })
-    })
-    // Centred once the list has grown to its full height.
-    const center = () => {
-      if (currentEl) list.scrollTop = currentEl.offsetTop - (list.clientHeight - currentEl.offsetHeight) / 2
-    }
-    center()
-    list.ownerDocument.defaultView.setTimeout(center, 360)
   }
 
   /** The previous (-1) or next (1) feature in roadmap order; its name and page slide in from that side. */
@@ -2287,7 +2095,7 @@ module.exports = class extends Plugin {
         "is-near-right",
         "is-rail-open"
       )
-      this.closeMenu()
+      // Not the menu: it's its own window, so going into it leaves this one.
     })
   }
 

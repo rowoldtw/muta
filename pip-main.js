@@ -25,6 +25,109 @@ const os = require("os")
 const path = require("path")
 
 const MARGIN = 12
+/**
+ * The bottom bar's menu (openMenu()): its own small window over the preview,
+ * centred on the bar's name button so it straddles the window's bottom edge.
+ * Its size, corners, how far it keeps from the screen's edges, and how it
+ * grows out of the button and shrinks back (ms, cubic-bezier points).
+ */
+const MENU = {
+  width: 300,
+  height: 280,
+  radius: 12,
+  screenMargin: 8,
+  open: { ms: 380, curve: [0.32, 0.72, 0, 1] },
+  close: { ms: 240, curve: [0.4, 0, 0.2, 1] },
+  /** After the cursor leaves the menu, how long before it closes. */
+  leaveMs: 250,
+}
+/**
+ * The menu window's page: the list over macOS's own menu material
+ * (glass.node's panel(), behind the page), tinted like the preview's frame,
+ * its outline growing from the button's to its own.
+ */
+const MENU_PAGE = `<!doctype html><html><head><meta charset="utf-8"><style>
+:root { --ink: 255 255 255; --frame: 44 44 46; --darkness: 0.55; }
+:root.light { --ink: 0 0 0; --frame: 242 242 245; }
+html, body { margin: 0; height: 100%; background: transparent; overflow: hidden;
+  font: 12px -apple-system, system-ui, sans-serif; -webkit-font-smoothing: antialiased; cursor: default; user-select: none; }
+#menu { position: absolute; inset: 0; border-radius: var(--radius); overflow: hidden; display: flex; }
+#menu::before { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+  background: rgb(var(--frame) / calc(var(--darkness) * 0.6));
+  box-shadow: inset 0 0 0 1px rgb(var(--ink) / 0.1), inset 0 1px 0 rgb(var(--ink) / 0.08); }
+#list { position: relative; flex: 1; overflow-y: auto; padding: 5px; scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(transparent, black 10px, black calc(100% - 10px), transparent); }
+.group { padding: 7px 8px 3px 24px; color: rgb(var(--ink) / 0.42); font-size: 11px; font-weight: 600;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.group:not(:first-child) { margin-top: 5px; border-top: 1px solid rgb(var(--ink) / 0.08); padding-top: 8px; }
+.item { position: relative; padding: 4px 8px 4px 24px; border-radius: 7px; color: rgb(var(--ink) / 0.85);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.item.sub { padding-left: 38px; }
+.item:hover { background: rgb(var(--ink) / 0.12); color: rgb(var(--ink)); }
+.item.current { color: rgb(var(--ink)); font-weight: 600; }
+.item.current::before { content: ""; position: absolute; left: 8px; top: 50%; width: 10px; height: 10px; translate: 0 -50%;
+  background: currentColor; -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M1.5 5.2 4 7.6 8.6 2.4' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat; }
+#ghost { position: absolute; display: grid; place-items: center; padding: 0 8px; box-sizing: border-box; white-space: nowrap;
+  overflow: hidden; color: rgb(var(--ink)); font-weight: 500; pointer-events: none; }
+</style></head><body><div id="menu"><div id="list"></div><div id="ghost"></div></div><script>
+const { ipcRenderer } = require("electron")
+const send = (...a) => ipcRenderer.send("muta-menu", ...a)
+const menu = document.getElementById("menu"), list = document.getElementById("list"), ghost = document.getElementById("ghost")
+let d = null
+const inset = (c) => "inset(" + c.y + "px " + (d.width - c.x - c.width) + "px " + (d.height - c.y - c.height) + "px " + c.x + "px round " + c.r + "px)"
+const whole = () => inset({ x: 0, y: 0, width: d.width, height: d.height, r: d.radius })
+const cancel = () => [menu, list, ghost].forEach((e) => e.getAnimations().forEach((a) => a.cancel()))
+window.mutaMenu = {
+  prepare(data) {
+    d = data
+    document.documentElement.className = d.dark ? "dark" : "light"
+    document.documentElement.style.setProperty("--darkness", d.darkness)
+    document.documentElement.style.setProperty("--radius", d.radius + "px")
+    document.body.style.fontFamily = d.font
+    list.textContent = ""
+    let group = "", current = null
+    d.items.forEach((it, i) => {
+      if (it.group !== group) { group = it.group; const g = list.appendChild(document.createElement("div")); g.className = "group"; g.textContent = group }
+      const row = list.appendChild(document.createElement("div"))
+      row.className = "item" + (it.depth ? " sub" : "") + (it.current ? " current" : "")
+      row.textContent = it.name
+      row.addEventListener("click", () => send("pick", i))
+      if (it.current) current = row
+    })
+    ghost.textContent = d.name
+    Object.assign(ghost.style, { left: d.from.x + "px", top: d.from.y + "px", width: d.from.width + "px", height: d.from.height + "px" })
+    cancel()
+    menu.style.clipPath = inset(d.from)
+    list.style.opacity = 0
+    ghost.style.opacity = 1
+    if (current) list.scrollTop = current.offsetTop - (list.clientHeight - current.offsetHeight) / 2
+  },
+  grow(ms, curve) {
+    const easing = "cubic-bezier(" + curve.join(",") + ")"
+    cancel()
+    menu.style.clipPath = whole()
+    list.style.opacity = 1
+    ghost.style.opacity = 0
+    menu.animate([{ clipPath: inset(d.from) }, { clipPath: whole() }], { duration: ms, easing })
+    list.animate([{ opacity: 0 }, { opacity: 1 }], { duration: ms * 0.7, delay: ms * 0.3, easing: "ease-out", fill: "backwards" })
+    ghost.animate([{ opacity: 1 }, { opacity: 0 }], { duration: ms * 0.4, easing: "ease-out" })
+  },
+  shrink(ms, curve) {
+    const easing = "cubic-bezier(" + curve.join(",") + ")"
+    const now = getComputedStyle(menu).clipPath
+    cancel()
+    menu.style.clipPath = inset(d.from)
+    list.style.opacity = 0
+    ghost.style.opacity = 1
+    menu.animate([{ clipPath: now }, { clipPath: inset(d.from) }], { duration: ms, easing })
+    list.animate([{ opacity: 1 }, { opacity: 0 }], { duration: ms * 0.5, easing: "ease-out" })
+    ghost.animate([{ opacity: 0 }, { opacity: 1 }], { duration: ms * 0.4, delay: ms * 0.6, easing: "ease-out", fill: "backwards" })
+  },
+}
+document.documentElement.addEventListener("mouseleave", () => send("leave"))
+document.documentElement.addEventListener("mouseenter", () => send("enter"))
+document.addEventListener("mousemove", () => send("enter"), { passive: true })
+</script></body></html>`
 /** Pulling a tucked handle this far (px) away from its side brings the window back out. */
 const PULL_OUT = 40
 /** Taken off the notch, how far sideways (px) it can go before it's back below the menu bar. */
@@ -530,7 +633,7 @@ class Pip {
     const now = Date.now()
     const c = screen.getCursorScreenPoint()
     // Out, the whole window counts; in, the notch and a little around it.
-    const over = n.open ? inside(c, this.bounds()) : inside(c, n.rect, 4)
+    const over = n.open ? inside(c, this.bounds()) || this.overMenu(c) : inside(c, n.rect, 4)
     if (over) n.over = now
     const open = over || now < n.until || (n.open && now - n.over < LEAVE_MS)
     if (open === n.open) return
@@ -553,8 +656,8 @@ class Pip {
         if (this.notch === n && !n.open) this.fadeGlass(0, 0)
       }, still ? 0 : SHRINK_MS)
       // It gets no mouseleave once it lets clicks through, so its bars close here.
+      this.closeMenu(true)
       this.renderNotch(`b.classList.add("is-notched")
-        if (window.mutaCloseMenu) window.mutaCloseMenu(true)
         b.classList.remove("is-armed", "is-near-top", "is-near-bottom", "is-near-right", "is-switcher-open", "is-rail-open")`)
     }
   }
@@ -608,19 +711,136 @@ class Pip {
     } catch {}
   }
 
-  /** Whether glass.node can put a panel of macOS's own material behind the page (for the bottom bar's menu). */
-  hasPanel() {
-    return !!(this.native && this.native.panel)
+  // ── The bottom bar's menu: its own small window, over the preview ─────
+
+  /** The menu's window, made the first time it's needed: see-through, a child of the preview, never focused. */
+  menuWindow() {
+    if (this.menu && !this.menu.isDestroyed()) return this.menu
+    const win = new BrowserWindow({
+      parent: this.window,
+      show: false,
+      frame: false,
+      transparent: true,
+      hasShadow: false,
+      resizable: false,
+      movable: false,
+      minimizable: false,
+      maximizable: false,
+      fullscreenable: false,
+      focusable: false,
+      skipTaskbar: true,
+      acceptFirstMouse: true,
+      backgroundColor: "#00000000",
+      webPreferences: { nodeIntegration: true, contextIsolation: false, backgroundThrottling: false },
+    })
+    win.setAlwaysOnTop(true, "pop-up-menu")
+    win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true })
+    if (this.native) this.native.preventActivation(win.getNativeWindowHandle())
+    this.menuLoaded = new Promise((resolve) => win.webContents.once("did-finish-load", resolve))
+    win.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(MENU_PAGE))
+    win.webContents.on("ipc-message", (event, channel, what, arg) => {
+      if (channel === "muta-menu") this.onMenu(what, arg)
+    })
+    this.menu = win
+    return win
   }
 
-  /** The menu's panel of macOS's own material behind the page, grown or shrunk (glass.node's panel()). */
-  panel(options) {
-    if (!this.hasPanel() || !this.alive()) return false
+  /**
+   * Opens the bottom bar's menu: it grows out of the bar's name button
+   * (button: its box on the page) to its full size, centred on the button,
+   * so it straddles the window's bottom edge (kept on the screen). data:
+   * { items: [{ group, name, depth, current }], name, font, dark, darkness, reduceMotion }.
+   */
+  async openMenu(data) {
+    if (!this.alive()) return
+    const win = this.menuWindow()
+    await this.menuLoaded
+    if (!this.alive() || win.isDestroyed()) return
+    clearTimeout(this.menuTimer)
+    clearTimeout(this.menuLeave)
+    const b = this.window.getBounds()
+    const button = { x: b.x + data.button.x, y: b.y + data.button.y, width: data.button.width, height: data.button.height }
+    const area = screen.getDisplayMatching(b).workArea
+    const m = MENU.screenMargin
+    const width = Math.min(MENU.width, area.width - 2 * m)
+    const height = Math.min(MENU.height, area.height - 2 * m)
+    const clamp = (v, lo, hi) => Math.round(Math.max(lo, Math.min(v, hi)))
+    const x = clamp(button.x + button.width / 2 - width / 2, area.x + m, area.x + area.width - m - width)
+    const y = clamp(button.y + button.height / 2 - height / 2, area.y + m, area.y + area.height - m - height)
+    const from = { x: button.x - x, y: button.y - y, width: button.width, height: button.height, r: 6 }
+    const ms = data.reduceMotion ? 0 : MENU.open.ms
+    this.menuOpen = { from, dark: data.dark }
+    win.setIgnoreMouseEvents(false)
+    win.setBounds({ x, y, width, height })
+    const page = { ...data, from, width, height, radius: MENU.radius }
+    await win.webContents.executeJavaScript(`mutaMenu.prepare(${JSON.stringify(page)})`).catch(() => {})
+    if (!this.menuOpen || win.isDestroyed()) return
+    win.showInactive()
+    this.menuPanel(true, { width, height }, from, ms, MENU.open.curve)
+    win.webContents.executeJavaScript(`mutaMenu.grow(${ms}, ${JSON.stringify(MENU.open.curve)})`).catch(() => {})
+  }
+
+  /** Shrinks the menu back into its button (at once with now) and puts it away. */
+  closeMenu(now = false) {
+    clearTimeout(this.menuLeave)
+    const open = this.menuOpen
+    const win = this.menu
+    if (!open || !win || win.isDestroyed()) return
+    this.menuOpen = null
+    const ms = now || reduceMotion() ? 0 : MENU.close.ms
+    win.setIgnoreMouseEvents(true)
+    this.menuPanel(false, null, open.from, ms, MENU.close.curve, open.dark)
+    win.webContents.executeJavaScript(`mutaMenu.shrink(${ms}, ${JSON.stringify(MENU.close.curve)})`).catch(() => {})
+    clearTimeout(this.menuTimer)
+    this.menuTimer = setTimeout(() => {
+      if (!this.menuOpen && !win.isDestroyed()) win.hide()
+    }, ms + 60)
+    // The page keeps the bottom bar open until it's back in.
+    this.renderNotch(`if (window.mutaMenuClosed) window.mutaMenuClosed(${ms})`)
+  }
+
+  /** The material behind the menu (glass.node's panel()), grown to size, or shrunk back into from. */
+  menuPanel(show, size, from, ms, curve, dark = this.menuOpen && this.menuOpen.dark) {
+    const win = this.menu
+    if (!this.native || !this.native.panel || !win || win.isDestroyed()) return
+    const [x1, y1, x2, y2] = curve
     try {
-      return this.native.panel(this.window.getNativeWindowHandle(), options)
-    } catch {
-      return false
-    }
+      this.native.panel(win.getNativeWindowHandle(), {
+        show,
+        x: 0,
+        y: 0,
+        width: size ? size.width : from.width,
+        height: size ? size.height : from.height,
+        radius: MENU.radius,
+        fromX: from.x,
+        fromY: from.y,
+        fromWidth: from.width,
+        fromHeight: from.height,
+        fromRadius: from.r,
+        seconds: ms / 1000,
+        x1,
+        y1,
+        x2,
+        y2,
+        dark: dark !== false,
+      })
+    } catch {}
+  }
+
+  /** What the menu's page says: a pick, or the cursor leaving it (it closes a moment later) or coming back. */
+  onMenu(what, arg) {
+    if (what === "pick") {
+      this.closeMenu()
+      this.renderNotch(`if (window.mutaMenuPick) window.mutaMenuPick(${Number(arg)})`)
+    } else if (what === "leave") {
+      clearTimeout(this.menuLeave)
+      this.menuLeave = setTimeout(() => this.closeMenu(), MENU.leaveMs)
+    } else if (what === "enter") clearTimeout(this.menuLeave)
+  }
+
+  /** Whether the menu is open with point c over it. */
+  overMenu(c) {
+    return !!(this.menuOpen && this.menu && !this.menu.isDestroyed() && inside(c, this.menu.getBounds()))
   }
 
   /** Runs a little script on the page's body, b (styles.css draws the rest). */
@@ -921,6 +1141,10 @@ class Pip {
   }
 
   dispose() {
+    clearTimeout(this.menuTimer)
+    clearTimeout(this.menuLeave)
+    if (this.menu && !this.menu.isDestroyed()) this.menu.destroy()
+    this.menu = null
     if (this.notch) this.clearNotch()
     this.stopClock()
     this.drag = null
