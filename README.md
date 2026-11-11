@@ -3,7 +3,7 @@
 Muta is an Obsidian plugin for macOS. Hovering a link opens its page in a small Liquid Glass window that floats over every app, on every Space, and moves like picture in picture. You can keep reading it while you work somewhere else.
 
 - **Edges grow into bars** when the cursor comes near: buttons and close on top, ‹ previous / next › at the bottom, a scroll rail with section marks on the right.
-- **Throw it** and it springs to a corner or the middle of a side. Throw it past the left or right edge to tuck it behind a handle.
+- **Throw it** and it springs to a corner or the top middle. Throw it past the left or right edge to tuck it behind a handle.
 - **Step through notes** in the order of a list of links, like a roadmap's.
 
 Everything it does, and what's next, is in [ROADMAP.md](ROADMAP.md).
