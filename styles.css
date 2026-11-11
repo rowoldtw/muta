@@ -699,9 +699,7 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
 }
 .muta-agent-glow::after,
 .muta-agent-haze,
-.muta-agent-haze::before,
-.muta-agent-bloom,
-.muta-agent-bloom::before {
+.muta-agent-bloom {
   content: "";
   position: absolute;
   inset: 0;
@@ -722,54 +720,58 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
     linear-gradient(#fff 0 0) content-box,
     linear-gradient(#fff 0 0);
   mask-composite: intersect, exclude;
-  filter: brightness(1.3) saturate(1.2);
-  opacity: 0.9;
+  opacity: 1;
 }
 /*
- * The haze: a band of the agent's colours along the edge, through the arc,
- * then blurred, so it spreads into the page and fades out gradually (the
- * page clips it, so it only goes inward).
+ * The haze: the agent's colours through the arc, fading out gradually into
+ * the page from its edge. Masked, not blurred: a CSS blur redrawn every frame
+ * for every beam is what made several agents stutter.
  */
 .muta-agent-haze {
-  filter: blur(26px) saturate(1.3);
-  opacity: 0.75;
-}
-.muta-agent-haze::before {
-  padding: 16px;
+  --muta-haze-fade:
+    #fff 0, rgb(255 255 255 / 0.62) 10px, rgb(255 255 255 / 0.36) 24px,
+    rgb(255 255 255 / 0.17) 40px, rgb(255 255 255 / 0.06) 56px, transparent 74px;
   background: conic-gradient(var(--muta-beam-colors));
   -webkit-mask:
     var(--muta-beam-arc),
-    linear-gradient(#fff 0 0) content-box,
-    linear-gradient(#fff 0 0);
-  -webkit-mask-composite: source-in, xor;
+    linear-gradient(to bottom, var(--muta-haze-fade)),
+    linear-gradient(to top, var(--muta-haze-fade)),
+    linear-gradient(to right, var(--muta-haze-fade)),
+    linear-gradient(to left, var(--muta-haze-fade));
+  -webkit-mask-composite: source-in, source-over, source-over, source-over;
   mask:
     var(--muta-beam-arc),
-    linear-gradient(#fff 0 0) content-box,
-    linear-gradient(#fff 0 0);
-  mask-composite: intersect, exclude;
+    linear-gradient(to bottom, var(--muta-haze-fade)),
+    linear-gradient(to top, var(--muta-haze-fade)),
+    linear-gradient(to right, var(--muta-haze-fade)),
+    linear-gradient(to left, var(--muta-haze-fade));
+  mask-composite: intersect, add, add, add;
+  opacity: 0.5;
 }
-/* The bloom: the head, blurred, so the beam's brightest point lights the page round it. */
+/* The bloom: the head, soft, lighting the page just inside the edge. */
 .muta-agent-bloom {
-  filter: blur(10px);
-  opacity: 0.55;
-}
-.muta-agent-bloom::before {
-  padding: 4px;
+  --muta-bloom-fade: #fff 0, rgb(255 255 255 / 0.4) 5px, rgb(255 255 255 / 0.1) 12px, transparent 20px;
   background: conic-gradient(
     from var(--muta-beam-from),
-    transparent 0deg, transparent calc(var(--muta-beam-span) * 0.58),
-    rgb(255 255 255 / 0.08) calc(var(--muta-beam-span) * 0.65),
-    rgb(255 255 255 / 0.45) calc(var(--muta-beam-span) * 0.69),
-    rgb(255 255 255 / 0.85) calc(var(--muta-beam-span) * 0.7),
-    rgb(255 255 255 / 0.85) calc(var(--muta-beam-span) * 0.705),
-    rgb(255 255 255 / 0.45) calc(var(--muta-beam-span) * 0.715),
-    rgb(255 255 255 / 0.08) calc(var(--muta-beam-span) * 0.75),
-    transparent calc(var(--muta-beam-span) * 0.82)
+    transparent 0deg, transparent calc(var(--muta-beam-span) * 0.6),
+    rgb(255 255 255 / 0.3) calc(var(--muta-beam-span) * 0.66),
+    rgb(255 255 255 / 0.7) calc(var(--muta-beam-span) * 0.7),
+    rgb(255 255 255 / 0.3) calc(var(--muta-beam-span) * 0.74),
+    transparent calc(var(--muta-beam-span) * 0.8)
   );
-  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-  -webkit-mask-composite: xor;
-  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-  mask-composite: exclude;
+  -webkit-mask:
+    linear-gradient(to bottom, var(--muta-bloom-fade)),
+    linear-gradient(to top, var(--muta-bloom-fade)),
+    linear-gradient(to right, var(--muta-bloom-fade)),
+    linear-gradient(to left, var(--muta-bloom-fade));
+  -webkit-mask-composite: source-over;
+  mask:
+    linear-gradient(to bottom, var(--muta-bloom-fade)),
+    linear-gradient(to top, var(--muta-bloom-fade)),
+    linear-gradient(to right, var(--muta-bloom-fade)),
+    linear-gradient(to left, var(--muta-bloom-fade));
+  mask-composite: add;
+  opacity: 0.35;
 }
 /*
  * The window's outer edge catches each beam's light, like the rim of macOS's
@@ -814,14 +816,13 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
   mask-composite: intersect, exclude;
 }
 .muta-agent-rim::before {
-  filter: brightness(1.5) saturate(1.3);
-  opacity: 0.6;
+  opacity: 0.75;
 }
-/* The fringe: a little ahead, its colours shifted, softened. */
+/* The fringe: a little ahead, lighter, like the light splitting at the glass's edge. (No filters: see the haze.) */
 .muta-agent-rim::after {
   --muta-rim-lead: 7deg;
-  filter: hue-rotate(28deg) brightness(1.6) saturate(1.6) blur(0.6px);
-  opacity: 0.35;
+  background: conic-gradient(rgb(255 255 255 / 0.9), rgb(255 255 255 / 0.5), rgb(255 255 255 / 0.9));
+  opacity: 0.22;
 }
 /* Docked, the window's top is the screen's edge: the rim lights only below the top bar. */
 .muta-window.is-docked .muta-agent-rim {
