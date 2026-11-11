@@ -118,8 +118,8 @@ static CAShapeLayer* rimLine(CALayer* layer, NSRect bounds) {
     rim.startPoint = CGPointMake(0.5, 0);
     rim.endPoint = CGPointMake(0.5, 1);
     rim.colors = @[
-      (__bridge id)[NSColor colorWithWhite:1 alpha:0.32].CGColor,
-      (__bridge id)[NSColor colorWithWhite:1 alpha:0.12].CGColor,
+      (__bridge id)[NSColor colorWithWhite:1 alpha:0.16].CGColor,
+      (__bridge id)[NSColor colorWithWhite:1 alpha:0.05].CGColor,
       (__bridge id)[NSColor colorWithWhite:1 alpha:0.0].CGColor,
     ];
     rim.locations = @[ @0, @0.45, @0.8 ];
