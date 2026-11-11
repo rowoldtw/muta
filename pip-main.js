@@ -11,9 +11,9 @@
  * scrolling whatever the window has left behind.
  *
  * Let go and the window coasts on with your momentum (UIKit's projection)
- * and springs to the nearest of eight spots: the corners and the middle of
- * each side. Thrown past the left or right edge, it tucks away there,
- * leaving a handle.
+ * and springs to the nearest of seven spots: the corners and the middle of
+ * each side but the bottom. Thrown past the left or right edge, it tucks away
+ * there, leaving a handle that slides up and down its side.
  */
 const { BrowserWindow, screen } = require("electron")
 const { spawn } = require("child_process")
@@ -23,6 +23,8 @@ const os = require("os")
 const path = require("path")
 
 const MARGIN = 12
+/** Pulling a tucked handle this far (px) away from its side brings the window back out. */
+const PULL_OUT = 40
 /** The most a window can be pulled past the bottom of the screen (px). */
 const RUBBER_MAX = 120
 const TUCK_VISIBLE = 12
@@ -81,7 +83,7 @@ function loadGlass(dir) {
 
 const workArea = (b) => screen.getDisplayMatching(b).workArea
 
-/** One of the eight resting spots for a window of b's size: col and row are 0, 0.5 or 1. */
+/** One of the resting spots for a window of b's size: col and row are 0, 0.5 or 1. */
 function spot(col, row, b) {
   const a = workArea(b)
   return {
@@ -193,7 +195,8 @@ class Pip {
       const spots = []
       for (const col of [0, 0.5, 1])
         for (const row of [0, 0.5, 1])
-          if (col !== 0.5 || row !== 0.5) spots.push(spot(col, row, b))
+          // Not the middle, and not the bottom middle.
+          if (col !== 0.5 || row === 0) spots.push(spot(col, row, b))
       const distance = (s) =>
         Math.hypot(s.x + s.width / 2 - cx, s.y + s.height / 2 - cy)
       target = spots.reduce((best, s) => (distance(s) < distance(best) ? s : best))
@@ -203,12 +206,15 @@ class Pip {
     this.springTo(target, velocity)
   }
 
+  /** Out on its side, at the resting spot nearest where its handle was slid to. */
   untuck() {
     if (!this.alive() || !this.state.tucked) return
-    this.state = {
-      bounds: this.state.bounds || spot(1, 1, this.bounds()),
-      tucked: null,
-    }
+    const col = this.state.tucked === "right" ? 1 : 0
+    const full = { ...this.bounds(), ...(this.state.bounds || {}), y: this.bounds().y }
+    const out = [0, 0.5, 1]
+      .map((row) => spot(col, row, full))
+      .reduce((best, s) => (Math.abs(s.y - full.y) < Math.abs(best.y - full.y) ? s : best))
+    this.state = { bounds: out, tucked: null }
     this.settled()
     this.springTo(this.state.bounds, { x: 0, y: 0 })
   }
@@ -283,14 +289,44 @@ class Pip {
     this.swipe = null
     const c = screen.getCursorScreenPoint()
     const b = this.bounds()
-    this.drag = { ox: c.x - b.x, oy: c.y - b.y, tracker: new Tracker() }
+    // A tucked handle slides up and down its side; pulled away from it, the window comes out.
+    this.drag = {
+      ox: c.x - b.x,
+      oy: c.y - b.y,
+      tracker: new Tracker(),
+      tucked: this.state.tucked,
+      startX: c.x,
+    }
     this.drag.tracker.add(b.x, b.y, performance.now())
     this.setMoving(true)
     this.tick()
   }
 
+  /** Slides a tucked handle to y along its side, kept on screen. */
+  slideHandle(y) {
+    const b = this.bounds()
+    const a = workArea(b)
+    this.move(b.x, Math.min(Math.max(y, a.y), a.y + a.height - b.height))
+  }
+
+  /** Keeps where a tucked handle was slid to. */
+  keepHandle() {
+    if (!this.state.tucked) return
+    this.state = { ...this.state, bounds: { ...(this.state.bounds || this.bounds()), y: this.bounds().y } }
+    this.settled()
+  }
+
   followDrag(now) {
     const c = screen.getCursorScreenPoint()
+    if (this.drag.tucked) {
+      const pull = this.drag.tucked === "right" ? this.drag.startX - c.x : c.x - this.drag.startX
+      if (pull > PULL_OUT) {
+        this.drag = null
+        this.setMoving(false)
+        return this.untuck()
+      }
+      return this.slideHandle(c.y - this.drag.oy)
+    }
     const raw = { x: c.x - this.drag.ox, y: c.y - this.drag.oy }
     this.drag.tracker.add(raw.x, raw.y, now)
     const { x, y } = this.limit(raw.x, raw.y)
@@ -300,6 +336,11 @@ class Pip {
 
   dragEnd() {
     if (!this.drag) return
+    if (this.drag.tucked) {
+      this.drag = null
+      this.setMoving(false)
+      return this.keepHandle()
+    }
     this.followDrag(performance.now())
     const v = this.drag.tracker.velocity()
     this.drag = null
@@ -397,8 +438,12 @@ class Pip {
     const b = this.bounds()
     const inside = x >= b.x && x < b.x + b.width && y >= b.y && y < b.y + b.height
     if (!inside) return
-    // Any swipe on a tucked window's handle brings it back.
-    if (this.state.tucked) return this.untuck()
+    // A swipe on a tucked handle slides it along its side; away from the side, the window comes out.
+    if (this.state.tucked) {
+      this.spring = null
+      this.swipe = { tucked: this.state.tucked, y: b.y, startY: b.y, cx: x, cy: y, pull: 0 }
+      return
+    }
     if (y >= b.y + BAR) return // over the page: it scrolls
     this.spring = null
     this.swipe = {
@@ -415,6 +460,19 @@ class Pip {
 
   swipeMoved(dx, dy, natural, ms) {
     const s = this.swipe
+    if (s.tucked) {
+      const sign = natural ? 1 : -1
+      s.pull += (s.tucked === "right" ? -dx : dx) * sign
+      if (s.pull > PULL_OUT) {
+        this.swipe = null
+        return this.untuck()
+      }
+      s.y += dy * sign
+      this.slideHandle(s.y)
+      // The cursor rides along on the handle, so the swipe keeps landing on it.
+      this.warp(s.cx, s.cy + (this.bounds().y - s.startY))
+      return
+    }
     // The window follows the fingers, whichever way scrolling goes.
     const sign = natural ? 1 : -1
     const fx = dx * sign
@@ -432,6 +490,10 @@ class Pip {
   }
 
   swipeEnded(ms) {
+    if (this.swipe.tucked) {
+      this.swipe = null
+      return this.keepHandle()
+    }
     // Fingers that rested before lifting throw nothing.
     this.swipe.tracker.add(this.swipe.fingers.x, this.swipe.fingers.y, ms)
     const v = this.swipe.tracker.velocity()

@@ -12,10 +12,10 @@
  *
  * Moving it works like macOS picture in picture, from the top bar only: drag
  * it, or swipe two fingers on it, in any direction, and let go; it carries on
- * with your momentum and springs to the nearest of eight spots (the corners
- * and the middle of each side). Throw it past the left or right edge and it
- * tucks away there, leaving a thin handle; click, drag or swipe the handle to
- * bring it back. It keeps where you put it, tucked or not. The movement runs
+ * with your momentum and springs to the nearest of seven spots (the corners
+ * and the middle of each side but the bottom). Throw it past the left or right
+ * edge and it tucks away there, leaving a thin handle; drag or swipe the handle
+ * to slide it along its side, and click it or pull it away to bring it back. It keeps where you put it, tucked or not. The movement runs
  * in Electron's main process (pip-main.js), with the trackpad's own swipe
  * events from a small native helper (pip-helper.swift). Build both:
  *   swiftc -O pip-helper.swift -o pip-helper
