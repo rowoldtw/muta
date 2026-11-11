@@ -14,7 +14,7 @@ Hovering a link shows its page in a small window that floats over every app, and
 > - [x] [Liquid Glass](features/Phase%201/Liquid%20Glass.md): The desktop shows through the window, blurred, behind a slightly darker page panel (macOS 26 or later).
 > - [x] [Edge bars](features/Phase%201/Edge%20bars.md): At rest the page sits in a thin border; when the cursor comes near an edge, that edge grows into a slim bar.
 >   - [x] [Top bar](features/Phase%201/Top%20bar.md): The page's buttons and a close button; drag or two-finger swipe here to move the window.
->   - [x] [Bottom bar](features/Phase%201/Bottom%20bar.md): ‹ the note's name and position ›, stepping to the previous or next note in order.
+>   - [x] [Bottom bar](features/Phase%201/Bottom%20bar.md): ‹ the note's name ›, stepping to the previous or next note in order.
 >   - [x] [Scroll rail](features/Phase%201/Scroll%20rail.md): A scroll rail on the right edge with a mark for each section: properties, callouts and headings.
 
 > [!area] Moving it

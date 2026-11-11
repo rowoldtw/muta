@@ -79,16 +79,15 @@ static napi_value result(napi_env env, bool ok) {
 }
 
 // The shape of a window hanging from the top of the screen like the notch:
-// a band lift tall across the top (above the screen, out of sight), concave
-// shoulders of radius s into sides at left and right, down to bottom, with
-// corners of radius b. Measured from the window's top left, like pip-main.js's
+// from the top of the screen, lift down the window (nothing above it, where
+// another display may be), concave shoulders of radius s into sides at left
+// and right, down to bottom, with corners of radius b. Measured from the window's top left, like pip-main.js's
 // hangingPath(), and drawn in a layer of height h (y up).
 static CGPathRef hangingPath(CGFloat left, CGFloat right, CGFloat bottom, CGFloat s, CGFloat b, CGFloat lift, CGFloat h) {
   const CGFloat k = 0.5523;  // quarter circles as Béziers
   CGMutablePathRef p = CGPathCreateMutable();
 #define P(x, y) (x), h - (y)
-  CGPathMoveToPoint(p, NULL, P(left - s, 0));
-  CGPathAddLineToPoint(p, NULL, P(right + s, 0));
+  CGPathMoveToPoint(p, NULL, P(left - s, lift));
   CGPathAddLineToPoint(p, NULL, P(right + s, lift));
   CGPathAddCurveToPoint(p, NULL, P(right + s - s * k, lift), P(right, lift + s - s * k), P(right, lift + s));
   CGPathAddLineToPoint(p, NULL, P(right, bottom - b));
@@ -215,6 +214,14 @@ static void styleBlur(napi_env env, napi_value o, NSVisualEffectView* blur, doub
   }
 }
 
+API_AVAILABLE(macos(26.0))
+static void styleGlass(napi_env env, napi_value o, NSGlassEffectView* glass, double radius) {
+  glass.cornerRadius = radius;
+  glass.style = (!o || flag(env, o, "clear", true)) ? NSGlassEffectViewStyleClear : NSGlassEffectViewStyleRegular;
+  double tint = o ? number(env, o, "tint", 0) : 0;
+  glass.tintColor = tint > 0 ? [NSColor colorWithWhite:0 alpha:tint] : nil;
+}
+
 static napi_value apply(napi_env env, napi_callback_info info) {
   size_t argc = 2;
   napi_value argv[2];
@@ -238,10 +245,7 @@ static napi_value apply(napi_env env, napi_callback_info info) {
   } else if (@available(macOS 26.0, *)) {
     if (!wantBlur && [old isKindOfClass:NSGlassEffectView.class]) {
       NSGlassEffectView* glass = (NSGlassEffectView*)old;
-      glass.cornerRadius = radius;
-      glass.style = (!o || flag(env, o, "clear", true)) ? NSGlassEffectViewStyleClear : NSGlassEffectViewStyleRegular;
-      double tint = o ? number(env, o, "tint", 0) : 0;
-      glass.tintColor = tint > 0 ? [NSColor colorWithWhite:0 alpha:tint] : nil;
+      styleGlass(env, o, glass, radius);
       layerView = old;
     }
   }
@@ -254,10 +258,7 @@ static napi_value apply(napi_env env, napi_callback_info info) {
       layerView = blur;
     } else if (@available(macOS 26.0, *)) {
       NSGlassEffectView* glass = [[NSGlassEffectView alloc] initWithFrame:root.bounds];
-      glass.cornerRadius = radius;
-      glass.style = (!o || flag(env, o, "clear", true)) ? NSGlassEffectViewStyleClear : NSGlassEffectViewStyleRegular;
-      double tint = o ? number(env, o, "tint", 0) : 0;
-      glass.tintColor = tint > 0 ? [NSColor colorWithWhite:0 alpha:tint] : nil;
+      styleGlass(env, o, glass, radius);
       layerView = glass;
     } else {
       [old removeFromSuperview];

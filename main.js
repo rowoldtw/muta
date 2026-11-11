@@ -501,7 +501,7 @@ module.exports = class extends Plugin {
     const index = items.findIndex((i) => i.file === current)
     if (index < 0) return items.length && this.go(0)
     const target = (index + delta + items.length) % items.length
-    this.slideName(delta, () => this.setName(items[target].file, target, items.length))
+    this.slideName(delta, () => this.setName(items[target].file))
     this.go(target, delta, "x")
   }
 
@@ -512,7 +512,7 @@ module.exports = class extends Plugin {
     this.schedule(items[index].file, direction || (index >= from ? 1 : -1), axis)
   }
 
-  setName(file, index, total) {
+  setName(file) {
     if (!this.ui) return
     this.ui.switcher.name.setText(file.basename)
   }
