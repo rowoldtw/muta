@@ -44,8 +44,8 @@ const SWITCH = {
   shift: 10,
   blur: 4,
   ease: "cubic-bezier(0.2, 0, 0, 1)",
-  /** Stepping through the roadmap: a longer, gentler sideways slide. */
-  sideways: { in: 420, out: 420, shift: 36, ease: "cubic-bezier(0.32, 0.72, 0, 1)" },
+  /** Stepping through the roadmap: the pages slide side by side, a page's width (plus gap px) apart. */
+  sideways: { duration: 460, gap: 24, ease: "cubic-bezier(0.32, 0.72, 0, 1)" },
 }
 /** The top bar drags the window; its buttons still click. */
 const HANDLE = ".view-header"
@@ -1449,11 +1449,14 @@ module.exports = class extends Plugin {
   }
 
   /**
-   * Switching pages: the old one drifts away and fades out with a slight
-   * blur while the new one slides into place and sharpens: upward for a link
-   * below the last one and downward for one above, sideways when stepping
-   * through the roadmap (opacity, transform and
-   * filter only, on the compositor).
+   * Switching pages. Hovering: the old one drifts away and fades out with a
+   * slight blur while the new one slides into place and sharpens, upward for
+   * a link below the last one and downward for one above. Stepping through
+   * the roadmap (arrows, swipes): the pages slide side by side, solid all the
+   * way, like turning a page, so neither ever shows through the other (a
+   * crossfade there doubled the text and dimmed it, which read as a blink).
+   * Transform, opacity and filter only, on the compositor; started before the
+   * new page is first drawn, so it never shows in place for a frame first.
    */
   crossfade(old, direction = 1, axis = "y") {
     const page = this.leaf && this.leaf.view.containerEl.querySelector(
@@ -1463,35 +1466,40 @@ module.exports = class extends Plugin {
       if (old) old.remove()
       return
     }
-    // Stepping through the roadmap (arrows, swipes): the pages slide sideways
-    // together, like turning pages, on transform and opacity alone so it
-    // stays smooth. Hovering: up and down, with a soft blur.
-    const sideways = axis === "x"
-    const t = sideways ? SWITCH.sideways : SWITCH
-    const move = (px) => (sideways ? `translateX(${px}px)` : `translateY(${px}px)`)
-    const shift = t.shift * direction
-    const blur = (px) => (sideways ? "none" : `blur(${px}px)`)
-    const raf = this.leaf.view.containerEl.win || window
-    raf.requestAnimationFrame(() => {
-      page.getAnimations().forEach((a) => a.cancel())
-      page.animate(
-        [
-          { opacity: 0, transform: move(shift), filter: blur(SWITCH.blur) },
-          { opacity: 1, transform: "none", filter: blur(0) },
-        ],
-        { duration: t.in, easing: t.ease }
-      )
-      if (!old) return
+    page.getAnimations().forEach((a) => a.cancel())
+    const done = () => old && old.remove()
+    if (axis === "x") {
+      const t = SWITCH.sideways
+      const width = page.getBoundingClientRect().width + t.gap
+      const options = { duration: t.duration, easing: t.ease }
+      page.animate([{ transform: `translateX(${direction * width}px)` }, { transform: "none" }], {
+        ...options,
+        fill: "backwards",
+      })
+      if (old)
+        old
+          .animate([{ transform: "none" }, { transform: `translateX(${-direction * width}px)` }], { ...options, fill: "forwards" })
+          .finished.then(done, done)
+      return
+    }
+    const shift = SWITCH.shift * direction
+    page.animate(
+      [
+        { opacity: 0, transform: `translateY(${shift}px)`, filter: `blur(${SWITCH.blur}px)` },
+        { opacity: 1, transform: "none", filter: "blur(0px)" },
+      ],
+      { duration: SWITCH.in, easing: SWITCH.ease, fill: "backwards" }
+    )
+    if (old)
       old
         .animate(
           [
-            { opacity: 1, transform: "none", filter: blur(0) },
-            { opacity: 0, transform: move(-shift), filter: blur(SWITCH.blur) },
+            { opacity: 1, transform: "none", filter: "blur(0px)" },
+            { opacity: 0, transform: `translateY(${-shift}px)`, filter: `blur(${SWITCH.blur}px)` },
           ],
-          { duration: t.out, easing: t.ease, fill: "forwards" }
+          { duration: SWITCH.out, easing: SWITCH.ease, fill: "forwards" }
         )
-        .finished.then(() => old.remove(), () => old.remove())
-    })
+        .finished.then(done, done)
   }
 
   async openWindow() {
