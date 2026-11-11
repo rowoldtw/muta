@@ -1443,6 +1443,10 @@ module.exports = class extends Plugin {
     const copy = page.cloneNode(true)
     copy.classList.add("muta-old")
     copy.setAttribute("aria-hidden", "true")
+    // Hidden until the new page is in: on top of the old page it's a copy of,
+    // its see-through backgrounds (callouts, properties) would double up and
+    // flash brighter while the new page loads.
+    copy.style.visibility = "hidden"
     content.appendChild(copy)
     copy.scrollTop = page.scrollTop
     return copy
@@ -1467,6 +1471,7 @@ module.exports = class extends Plugin {
       return
     }
     page.getAnimations().forEach((a) => a.cancel())
+    if (old) old.style.visibility = ""
     const done = () => old && old.remove()
     if (axis === "x") {
       const t = SWITCH.sideways
