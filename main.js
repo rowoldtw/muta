@@ -90,9 +90,6 @@ const OVERSCROLL_MAX = 90
 const OVERSCROLL_FOLLOW_MS = 28
 /** Scrolling that stops this long (ms) has ended its gesture. */
 const HELD_GAP_MS = 160
-/** A flick into the end bounces this far per px of its scroll speed, over this long (ms). */
-const BOUNCE_PER_PX = 2.2
-const BOUNCE_MS = 520
 /** The rail stays open this long after the page stops scrolling (ms). */
 const RAIL_LINGER_MS = 900
 
@@ -1809,7 +1806,7 @@ module.exports = class extends Plugin {
     let settled = false // let go of a pull: the momentum that follows mustn't pull again
     let held = false // this gesture was cancelled for a pull, so it can't scroll the page natively
     let lastWheel = 0
-    let bounce = 0 // a flick's momentum seems to have hit the end: waiting a moment to be sure (see below)
+    let bounce = 0 // momentum seems to have hit the end: waiting a moment to be sure (see below)
     let timer = 0
     let frame = 0
     let last = 0
@@ -1908,33 +1905,17 @@ module.exports = class extends Plugin {
           if (el) el.getAnimations().forEach((a) => a.cancel())
         }
         if (lifted && !raw) {
-          // A flick's momentum running into the end: the page carries on past
-          // it as far as its speed takes it and springs straight back, as
-          // macOS pages do, and the rest of the momentum is ignored (holding
-          // the page out until the momentum ran out was the pause). But a new
+          // A flick's momentum running into the end: the page just stops
+          // there, and the rest of the momentum is ignored. But a new
           // swipe's first events reach the page before the trackpad helper's
           // touch-down does (it comes the long way, through the main
           // process), and would look like momentum too: so it waits a moment
-          // for the touch-down, and bounces only if none comes. Deciding at
-          // once was why pulling at the end sometimes bounced instead.
-          if (!bounce) {
-            const speed = dy
+          // for the touch-down, and treats it as momentum only if none comes.
+          if (!bounce)
             bounce = win.setTimeout(() => {
               bounce = 0
-              if (!lifted || raw) return
-              settled = true
-              if (!el || reduceMotion()) return
-              const past = -Math.sign(speed) * Math.min(Math.abs(speed) * BOUNCE_PER_PX, OVERSCROLL_MAX * 0.6)
-              el.animate(
-                [
-                  { transform: "none", easing: "cubic-bezier(0.25, 0.8, 0.4, 1)" },
-                  { transform: `translateY(${past}px)`, opacity: fade(past), offset: 0.3, easing: "cubic-bezier(0.32, 0.72, 0, 1)" },
-                  { transform: "none" },
-                ],
-                { duration: BOUNCE_MS }
-              )
+              if (lifted && !raw) settled = true
             }, TOUCH_WAIT_MS)
-          }
           return
         }
         const next = raw - dy
