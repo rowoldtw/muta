@@ -130,6 +130,7 @@ const DEFAULTS = {
   agentClaude: true,
   agentCodex: true,
   agentOpencode: true,
+  agentAntigravity: true,
 }
 
 /**
@@ -170,13 +171,15 @@ const alive = (w) => !!(w && !w.isDestroyed())
 
 // ── Agents: local coding agents at work in this vault ──────────────────
 //
-// Claude Code, Codex and OpenCode each keep a record of their sessions on
-// disk: Claude Code a JSONL file per session under ~/.claude/projects (named
-// after the folder it runs in), Codex one per session under ~/.codex/sessions
-// (by date), OpenCode a SQLite database. A session is working while its
+// Claude Code, Codex, OpenCode and Antigravity each keep a record of their
+// sessions on disk: Claude Code a JSONL file per session under
+// ~/.claude/projects (named after the folder it runs in), Codex one per
+// session under ~/.codex/sessions (by date), OpenCode a SQLite database, and
+// Antigravity a SQLite database of its conversations plus one per
+// conversation under ~/.gemini/antigravity-cli. A session is working while its
 // record says it's mid-turn (a prompt or tool result not yet answered with a
 // final reply); the files it has edited (Claude Code's Edit and Write,
-// Codex's patches, OpenCode's edit and write) say which notes. It's working
+// Codex's patches, OpenCode's edit and write, the files Antigravity's steps write) say which notes. It's working
 // in this vault when it runs from inside the vault or has just edited a note
 // in it, including notes the vault links to from elsewhere (a symlinked
 // folder, as the test vault's features/ is).
@@ -193,7 +196,7 @@ const AGENT_EDIT_MS = 300000
 const AGENT_TAIL = 8 * 1024 * 1024
 /** How many of a session's latest edits are kept. */
 const AGENT_EDITS = 20
-const AGENT_NAMES = { claude: "Claude Code", codex: "Codex", opencode: "OpenCode" }
+const AGENT_NAMES = { claude: "Claude Code", codex: "Codex", opencode: "OpenCode", antigravity: "Antigravity" }
 
 class AgentWatch {
   /** onChange({ kind, name, edit: { file, text, at } | null } | null): the agent at work in the vault, or none. */
@@ -207,6 +210,8 @@ class AgentWatch {
     this.roots = null
     // What each session file has said so far, and how far it's been read.
     this.records = new Map()
+    // When each Antigravity edit was first seen (its records keep no time per step).
+    this.seenAt = new Map()
   }
 
   start() {
@@ -241,6 +246,7 @@ class AgentWatch {
         ...(s.agentClaude ? this.claude(now) : []),
         ...(s.agentCodex ? this.codex(now) : []),
         ...(s.agentOpencode ? await this.opencode(now) : []),
+        ...(s.agentAntigravity ? await this.antigravity(now) : []),
       ]
       let best = null
       for (const session of sessions) {
@@ -507,21 +513,14 @@ class AgentWatch {
     }
   }
 
-  /** OpenCode: its database, through macOS's sqlite3. */
+  /** OpenCode: its database, through macOS's sqlite3 (OpenCode 2's tables, or the ones before them). */
   async opencode(now) {
     const path = require("path")
     const db = path.join(require("os").homedir(), ".local", "share", "opencode", "opencode.db")
     if (!require("fs").existsSync(db)) return []
-    const query = (sql) =>
-      new Promise((resolve) =>
-        require("child_process").execFile("/usr/bin/sqlite3", ["-readonly", "-json", db, sql], { timeout: 1000 }, (err, out) => {
-          try {
-            resolve(err || !out.trim() ? [] : JSON.parse(out))
-          } catch {
-            resolve([])
-          }
-        })
-      )
+    const query = (sql) => this.sqlite(db, sql)
+    const v2 = await query("select name from sqlite_master where type = 'table' and name = 'session_v2'")
+    if (v2.length) return this.opencode2(now, query)
     const rows = await query(`select id, directory, time_updated from session where time_updated > ${Math.floor(now - AGENT_STALE_MS)}`)
     const sessions = []
     for (const row of rows) {
@@ -548,6 +547,110 @@ class AgentWatch {
       sessions.push(session)
     }
     return sessions
+  }
+
+  /**
+   * OpenCode 2: its sessions mark when a turn started (time_busy) and ended
+   * (time_idle); its messages hold the tool calls, edits among them.
+   */
+  async opencode2(now, query) {
+    const rows = await query(
+      `select id, directory, time_updated, time_busy, time_idle from session_v2 where time_updated > ${Math.floor(now - AGENT_STALE_MS)}`
+    )
+    const sessions = []
+    for (const row of rows) {
+      if (!/^[\w-]+$/.test(row.id)) continue
+      const working = !!row.time_busy && !(row.time_idle >= row.time_busy)
+      const session = { kind: "opencode", cwd: row.directory, at: row.time_updated, edits: [], working }
+      const messages = await query(
+        `select data, time_updated from session_message where session_id = '${row.id}' and type = 'assistant' ` +
+          `and (data like '%"name":"edit"%' or data like '%"name":"write"%') order by seq desc limit 10`
+      )
+      for (const message of messages) {
+        try {
+          for (const c of JSON.parse(message.data).content || []) {
+            const input = c.state && c.state.input
+            const path = input && (input.path || input.filePath)
+            if (c.type !== "tool" || !/^(edit|write)$/.test(c.name) || !path) continue
+            const at = (c.time && (c.time.completed || c.time.created)) || message.time_updated
+            session.edits.push({ path, text: input.newString || input.content || "", at })
+          }
+        } catch {}
+      }
+      sessions.push(session)
+    }
+    return sessions
+  }
+
+  /**
+   * Antigravity: its conversations' summaries say which are running and in
+   * which folder (CASCADE_RUN_STATUS_RUNNING, or not_fully_idle while tasks
+   * it started in the background still run); each conversation's steps hold
+   * the files it wrote, as {"Path": …, "Content": …} in their protobufs.
+   * Its CLI keeps them in ~/.gemini/antigravity-cli; the app, if it keeps the
+   * same, in ~/.gemini/antigravity.
+   */
+  async antigravity(now) {
+    const path = require("path")
+    const fs = require("fs")
+    const sessions = []
+    for (const name of ["antigravity-cli", "antigravity"]) {
+      const dir = path.join(require("os").homedir(), ".gemini", name)
+      const db = path.join(dir, "conversation_summaries.db")
+      if (!fs.existsSync(db)) continue
+      const rows = await this.sqlite(
+        db,
+        "select conversation_id, workspace_uris, last_modified_time from conversation_summaries " +
+          "where status = 'CASCADE_RUN_STATUS_RUNNING' or not_fully_idle"
+      )
+      for (const row of rows) {
+        const id = row.conversation_id
+        const at = Date.parse(String(row.last_modified_time).replace(" ", "T").replace(/(\.\d{3})\d*/, "$1"))
+        if (!/^[\w-]+$/.test(id) || !(now - at < AGENT_STALE_MS)) continue
+        let cwd = null
+        try {
+          const uri = JSON.parse(row.workspace_uris)[0]
+          if (uri && uri.startsWith("file://")) cwd = decodeURIComponent(uri.slice(7))
+        } catch {}
+        const session = { kind: "antigravity", cwd, at, edits: [], working: true }
+        const steps = await this.sqlite(
+          path.join(dir, "conversations", `${id}.db`),
+          "select idx, hex(step_payload) as hex from steps " +
+            `where cast(step_payload as text) like '%"Path":"%' or cast(step_payload as text) like '%"TargetFile":"%' ` +
+            "order by idx desc limit 10"
+        )
+        for (const step of steps) {
+          const text = Buffer.from(step.hex || "", "hex").toString("utf8")
+          const m = text.match(/\{[^{}]*"(?:Path|TargetFile)":"(?:[^"\\]|\\.)*"[^{}]*\}/)
+          if (!m) continue
+          let input
+          try {
+            input = JSON.parse(m[0])
+          } catch {
+            continue
+          }
+          const key = `${id}|${step.idx}`
+          if (!this.seenAt.has(key)) this.seenAt.set(key, now)
+          const content = input.Content || input.ReplacementContent || input.CodeContent || ""
+          session.edits.push({ path: input.Path || input.TargetFile, text: content.replace(/^\n+/, ""), at: this.seenAt.get(key) })
+        }
+        sessions.push(session)
+      }
+    }
+    return sessions
+  }
+
+  /** The rows sqlite3 (macOS's own) finds for query sql in database db, read-only; none on any error. */
+  sqlite(db, sql) {
+    return new Promise((resolve) =>
+      require("child_process").execFile("/usr/bin/sqlite3", ["-readonly", "-json", db, sql], { timeout: 1000 }, (err, out) => {
+        try {
+          resolve(err || !out.trim() ? [] : JSON.parse(out))
+        } catch {
+          resolve([])
+        }
+      })
+    )
   }
 }
 
@@ -2158,7 +2261,7 @@ class MutaSettings extends PluginSettingTab {
         s
           .setName("Show when an agent is working")
           .setDesc(
-            "A glow runs round the window's inner edge while a local agent (Claude Code, Codex or OpenCode) " +
+            "A beam runs round the page's edge while a local agent (Claude Code, Codex, OpenCode or Antigravity) " +
               "is working in this vault, and a follow button appears in the top bar."
           )
           .addToggle((t) => t.setValue(plugin.settings.agentIndicator).onChange((v) => save("agentIndicator", v)))
@@ -2186,6 +2289,12 @@ class MutaSettings extends PluginSettingTab {
           .setName("OpenCode")
           .setDesc("Watch OpenCode's sessions (~/.local/share/opencode).")
           .addToggle((t) => t.setValue(plugin.settings.agentOpencode).onChange((v) => save("agentOpencode", v)))
+      )
+      .addSetting((s) =>
+        s
+          .setName("Antigravity")
+          .setDesc("Watch Antigravity's conversations (~/.gemini/antigravity-cli).")
+          .addToggle((t) => t.setValue(plugin.settings.agentAntigravity).onChange((v) => save("agentAntigravity", v)))
       )
 
     new SettingGroup(containerEl)

@@ -709,6 +709,10 @@ body.muta-window[data-muta-agent="opencode"] {
   /* Greens. */
   --muta-beam-colors: #10b981, #6ee7b7, #059669, #bef264, #34d399, #0d9488, #10b981;
 }
+body.muta-window[data-muta-agent="antigravity"] {
+  /* Google's blue, red, yellow and green. */
+  --muta-beam-colors: #4285f4, #8ab4f8, #ea4335, #fbbc04, #34a853, #4285f4;
+}
 .muta-window.has-agent .muta-agent-glow,
 .muta-window.agent-leaving .muta-agent-glow {
   position: absolute;
