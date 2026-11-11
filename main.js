@@ -700,6 +700,13 @@ module.exports = class extends Plugin {
       this.agentLeaving = window.setTimeout(() => doc.body.classList.remove("agent-leaving"), 500)
     }
     doc.body.classList.toggle("has-agent", !!agent)
+    // The beam rides round the page's edge, inside the frame (styles.css).
+    const page = this.leaf.view.contentEl
+    if (agent && !page.querySelector(":scope > .muta-agent-glow")) {
+      const glow = page.createDiv({ cls: "muta-agent-glow" })
+      glow.createDiv({ cls: "muta-agent-haze" })
+      glow.createDiv({ cls: "muta-agent-bloom" })
+    }
     // Its glow takes the agent's colours (styles.css).
     if (agent) doc.body.dataset.mutaAgent = agent.kind
     doc.body.classList.toggle("is-following", !!(agent && this.following))
@@ -1644,8 +1651,6 @@ module.exports = class extends Plugin {
     const gestures = new Set()
     this.onGesture = (handler) => gestures.add(handler)
     doc.defaultView.mutaGesture = (phase) => gestures.forEach((handler) => handler(phase))
-    // A glow round the inner edge while an agent works in the vault.
-    doc.body.createDiv({ cls: "muta-agent-glow" }).createDiv({ cls: "muta-agent-bloom" })
     this.attachEdges(doc)
     this.attachOverscroll(doc)
     this.attachDrag(doc)
