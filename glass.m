@@ -2,14 +2,14 @@
 // Electron's main process, which Electron's own vibrancy can't do (its
 // materials blur so heavily that nothing behind reads through).
 //
-//   glass.apply(win.getNativeWindowHandle(), { radius, clear, tint, alpha, blur, material, shoulders, lift })
+//   glass.apply(win.getNativeWindowHandle(), { radius, dark, clear, tint, alpha, blur, material, blurRadius, pure, shoulders, lift })
 //
 // blurRadius (with blur): how strongly it blurs, past what the material does;
 // pure: just that blur, without the material's grey tint.
 // shoulders (with blur): shaped like the notch, for a window hanging from the
 // top of the screen: concave shoulders this round at the top, under a band
 // lift tall that sits above the screen; no shadow.
-// clear: Liquid Glass's clear style (else regular). blur: a plain macOS blur
+// dark: the dark look (the default), else the light one. clear: Liquid Glass's clear style (else regular). blur: a plain macOS blur
 // (material: an NSVisualEffectMaterial number) instead of glass, always
 // drawn as if the window were active. alpha: how strongly it's drawn; below
 // 1 the sharp desktop shows through it, for a lighter, see-through look.
@@ -219,7 +219,8 @@ static void styleGlass(napi_env env, napi_value o, NSGlassEffectView* glass, dou
   glass.cornerRadius = radius;
   glass.style = (!o || flag(env, o, "clear", true)) ? NSGlassEffectViewStyleClear : NSGlassEffectViewStyleRegular;
   double tint = o ? number(env, o, "tint", 0) : 0;
-  glass.tintColor = tint > 0 ? [NSColor colorWithWhite:0 alpha:tint] : nil;
+  CGFloat white = (!o || flag(env, o, "dark", true)) ? 0 : 1;  // a dark tint, or a light one
+  glass.tintColor = tint > 0 ? [NSColor colorWithWhite:white alpha:tint] : nil;
 }
 
 static napi_value apply(napi_env env, napi_callback_info info) {
@@ -264,11 +265,6 @@ static napi_value apply(napi_env env, napi_callback_info info) {
       [old removeFromSuperview];
       return result(env, false);  // Liquid Glass needs macOS 26
     }
-    // Glass adapts to what's behind it, flipping between a light and a dark
-    // look as that changes; held to the dark look, it stays put.
-    NSAppearance* dark = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
-    layerView.appearance = dark;
-    window.appearance = dark;
     layerView.identifier = kId;
     layerView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     layerView.alphaValue = alpha;
@@ -286,6 +282,12 @@ static napi_value apply(napi_env env, napi_callback_info info) {
       }];
     }
   }
+  // Glass adapts to what's behind it, flipping between a light and a dark
+  // look as that changes; held to one look (dark, or light for Obsidian's
+  // light theme), it stays put.
+  NSAppearance* look = [NSAppearance appearanceNamed:(!o || flag(env, o, "dark", true)) ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+  layerView.appearance = look;
+  window.appearance = look;
   window.opaque = NO;
   window.backgroundColor = NSColor.clearColor;
   window.hasShadow = !hanging;

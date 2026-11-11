@@ -9,6 +9,8 @@ Making the window feel native: borderless chrome, haptics, and a tuck that holds
 > - [[Borderless top bar]]
 > - [[Menus at the button]]
 > - [[Settings cards]]
+> - [[Light mode]]
+> - [[Follows accessibility settings]]
 > - *Proposed:* Links clicked in the preview open in Obsidian instead of replacing the preview's page.
 
 > [!area] Tucking

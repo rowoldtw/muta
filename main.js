@@ -205,6 +205,9 @@ module.exports = class extends Plugin {
       instance.onLinkHover = original
     })
 
+    // Switching Obsidian between light and dark switches the window's glass too.
+    this.registerEvent(this.app.workspace.on("css-change", () => this.applySettings()))
+
     this.addCommand({
       id: "toggle-preview-window",
       name: "Toggle preview window",
@@ -931,14 +934,25 @@ module.exports = class extends Plugin {
     return `${this.app.vault.adapter.getBasePath()}/${this.manifest.dir}`
   }
 
+  /** The glass's options: its look follows Obsidian's light or dark theme. */
   glassOptions() {
-    return this.settings.glass ? { ...GLASS, clear: this.settings.glassStyle === "clear" } : null
+    if (!this.settings.glass) return null
+    const dark = !document.body.classList.contains("theme-light")
+    return { ...GLASS, dark, clear: this.settings.glassStyle === "clear" }
   }
 
   /** Puts changed settings into effect on an open window. */
   applySettings() {
     const doc = this.leaf && this.leaf.view.containerEl.ownerDocument
-    if (doc && doc !== document) doc.body.style.setProperty("--muta-darkness", String(this.settings.darkness))
+    if (doc && doc !== document) {
+      doc.body.style.setProperty("--muta-darkness", String(this.settings.darkness))
+      // Docked at the notch it stays dark (pip-main.js), whatever the theme says.
+      const body = doc.body
+      if (body.classList.contains("is-docked") && body.classList.contains("theme-light")) {
+        body.classList.replace("theme-light", "theme-dark")
+        body.dataset.mutaLight = "true"
+      }
+    }
     if (this.isOpen()) {
       this.win.setVisibleOnAllWorkspaces(this.settings.allSpaces, {
         visibleOnFullScreen: this.settings.allSpaces,

@@ -35,10 +35,26 @@ html.muta-root body.muta-window .mod-root {
   --pip-ease: cubic-bezier(0.2, 0, 0, 1);
   /* The window's own corners (macOS, continuous): the page's sit concentric inside them. */
   --pip-radius: 16px;
+  /*
+   * Colours that follow Obsidian's theme: the frame's tint, the page panel's,
+   * and ink for highlights, tracks and hairlines over the glass.
+   */
+  --muta-frame: 44 44 46;
+  --muta-panel: rgb(0 0 0 / 0.3);
+  --muta-ink: 255 255 255;
+}
+/* Light: a pale frame, a lighter panel, dark ink. Docked at the notch it stays dark. */
+.muta-window.theme-light {
+  --pip-popout-bg: rgb(250 250 252 / 0.97);
+  --pip-popout-border: rgb(0 0 0 / 0.1);
+  --pip-popout-shadow: 0 8px 24px rgb(0 0 0 / 0.16);
+  --muta-frame: 242 242 245;
+  --muta-panel: rgb(255 255 255 / 0.45);
+  --muta-ink: 0 0 0;
 }
 html.muta-root body.muta-window {
   /* A steady dark layer over the glass: less see-through, and it hides the glass's own shifts. */
-  background: rgb(44 44 46 / var(--muta-darkness, 0.55)) !important;
+  background: rgb(var(--muta-frame) / var(--muta-darkness, 0.55)) !important;
 }
 .muta-window.is-near-top,
 .muta-window.is-dragging {
@@ -61,7 +77,7 @@ html.muta-root body.muta-window {
   --metadata-property-radius-focus: calc(var(--pip-radius) - var(--pip-frame) - 4px);
   padding: 4px !important;
   border-radius: calc(var(--pip-radius) - var(--pip-frame));
-  background-color: rgb(255 255 255 / 0.06) !important;
+  background-color: rgb(var(--muta-ink) / 0.06) !important;
 }
 .muta-window .metadata-container .metadata-properties {
   background-color: transparent !important;
@@ -156,8 +172,8 @@ html.muta-root body.muta-window .mod-root .metadata-container .metadata-content 
   border-radius: calc(var(--pip-radius) - var(--pip-frame));
   overflow: hidden;
   /* Darker than the frame, so the page reads as a panel inside it. */
-  background: rgb(0 0 0 / 0.3) !important;
-  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.07);
+  background: var(--muta-panel) !important;
+  box-shadow: inset 0 0 0 1px rgb(var(--muta-ink) / 0.07);
   transition:
     top 220ms var(--pip-ease),
     right 260ms var(--pip-ease),
@@ -459,7 +475,7 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
 .muta-switcher-step:hover,
 .muta-switcher-title:hover,
 .muta-window.is-switcher-open .muta-switcher-title {
-  background: rgb(255 255 255 / 0.09) !important;
+  background: rgb(var(--muta-ink) / 0.09) !important;
   color: var(--text-normal);
 }
 .muta-switcher-name {
@@ -524,7 +540,7 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
   padding-left: 22px;
 }
 .muta-switcher-item:hover {
-  background: rgb(255 255 255 / 0.08);
+  background: rgb(var(--muta-ink) / 0.08);
   color: var(--text-normal);
 }
 .muta-switcher-item.is-current {
@@ -556,7 +572,7 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
   right: calc(var(--pip-frame) + 1px);
   width: calc(var(--pip-rail) - 2 * var(--pip-frame) - 1px);
   border-radius: 4px;
-  background: rgb(255 255 255 / 0.08);
+  background: rgb(var(--muta-ink) / 0.08);
   cursor: default;
 }
 .muta-rail-thumb {
@@ -564,7 +580,7 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
   left: 0;
   right: 0;
   border-radius: inherit;
-  background: rgb(255 255 255 / 0.3);
+  background: rgb(var(--muta-ink) / 0.3);
 }
 .muta-rail-tick {
   position: absolute;
@@ -573,7 +589,7 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
   height: 2px;
   margin-top: -1px;
   border-radius: 1px;
-  background: rgb(255 255 255 / 0.5);
+  background: rgb(var(--muta-ink) / 0.5);
 }
 .muta-rail-tick.is-current {
   background: var(--interactive-accent);
@@ -645,4 +661,46 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
 /* The page pulls past its ends on its own compositor layer (main.js), so it stays smooth. */
 .muta-window .markdown-preview-view:not(.muta-old) .markdown-preview-sizer {
   will-change: transform;
+}
+
+/*
+ * Reduce transparency (System Settings › Accessibility › Display): solid
+ * backgrounds instead of see-through ones. macOS draws its own glass and
+ * blur solid then too.
+ */
+@media (prefers-reduced-transparency: reduce) {
+  html.muta-root body.muta-window:not(.is-docked) {
+    background: rgb(var(--muta-frame)) !important;
+  }
+  html.muta-root:has(> body.is-docked)::before {
+    background-image: linear-gradient(to bottom, #000, rgb(28 28 30) 45%);
+  }
+  .muta-window {
+    --pip-popout-bg: rgb(36 36 38);
+  }
+  .muta-window.theme-light {
+    --pip-popout-bg: rgb(250 250 252);
+  }
+}
+
+/* Increase contrast: the page panel, the window and popouts get clear edges. */
+@media (prefers-contrast: more) {
+  .muta-window .view-content {
+    box-shadow: inset 0 0 0 1px rgb(var(--muta-ink) / 0.45);
+  }
+  html.muta-root body.muta-window:not(.is-docked) {
+    box-shadow: inset 0 0 0 1px rgb(var(--muta-ink) / 0.5);
+  }
+  .muta-window {
+    --pip-popout-border: rgb(255 255 255 / 0.5);
+  }
+  .muta-window.theme-light {
+    --pip-popout-border: rgb(0 0 0 / 0.5);
+  }
+  .muta-rail-track {
+    background: rgb(var(--muta-ink) / 0.2);
+  }
+  .muta-rail-thumb {
+    background: rgb(var(--muta-ink) / 0.6);
+  }
 }

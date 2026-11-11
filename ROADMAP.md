@@ -52,6 +52,8 @@ Making the window feel native: borderless chrome, haptics, and a tuck that holds
 > - [x] [Borderless top bar](features/Phase%202/Borderless%20top%20bar.md): No traffic lights: the menu sits in the top bar's left corner and the close button in the right.
 > - [x] [Menus at the button](features/Phase%202/Menus%20at%20the%20button.md): Menus opened from the preview (More options, a right-click) open at the button, over the preview window.
 > - [x] [Settings cards](features/Phase%202/Settings%20cards.md): Each settings group (Look, Behaviour, Order) sits in one card, like Obsidian's own settings.
+> - [x] [Light mode](features/Phase%202/Light%20mode.md): The window follows Obsidian's light or dark theme: a pale frame and light glass in light mode.
+> - [x] [Follows accessibility settings](features/Phase%202/Follows%20accessibility%20settings.md): With Reduce transparency the window turns solid, and with Increase contrast its page and popouts get clear edges.
 > - *Proposed:* Links clicked in the preview open in Obsidian instead of replacing the preview's page.
 
 > [!area] Tucking

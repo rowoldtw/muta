@@ -444,6 +444,11 @@ class Pip {
       h.setProperty("--muta-notch-height", "${rect.height}px")
       h.setProperty("--muta-shape-out", ${JSON.stringify(`path("${out}")`)})
       h.setProperty("--muta-shape-in", ${JSON.stringify(`path("${into}")`)})
+      // Dark in either theme: a light theme's page is shown dark while docked.
+      if (b.classList.contains("theme-light")) {
+        b.classList.replace("theme-light", "theme-dark")
+        b.dataset.mutaLight = "true"
+      }
       b.classList.add("is-docked")`)
     this.pollNotch()
   }
@@ -465,7 +470,11 @@ class Pip {
     this.window.setIgnoreMouseEvents(false)
     this.window.setHasShadow(true)
     this.applyGlass()
-    this.renderNotch(`b.classList.remove("is-docked", "is-notched")`)
+    this.renderNotch(`b.classList.remove("is-docked", "is-notched")
+      if (b.dataset.mutaLight) {
+        b.classList.replace("theme-dark", "theme-light")
+        delete b.dataset.mutaLight
+      }`)
   }
 
   /** A link was hovered: a docked window comes out to show it. */
@@ -516,6 +525,8 @@ class Pip {
     return {
       alpha: 1,
       ...(this.glass || {}),
+      // It grows out of the black notch, so it's dark in either theme.
+      dark: true,
       blur: true,
       material: DOCKED_MATERIAL,
       blurRadius: DOCKED_BLUR,
