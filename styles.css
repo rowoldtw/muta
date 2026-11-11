@@ -378,10 +378,8 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
   display: none !important;
 }
 /*
- * The buttons beside the notch: a glass capsule a side, like the Dynamic
- * Island's controls, back and forward on the left, edit and More options on
- * the right, each pair split by a hairline. As the bar opens they spring out
- * of the notch, sideways and up to size.
+ * The buttons beside the notch: bare icons, back and forward on the left,
+ * edit and More options on the right, brightening under the cursor.
  */
 .muta-window.is-docked .view-header {
   --icon-size: 15px;
@@ -391,41 +389,27 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
   height: 26px;
   min-width: 34px;
   justify-content: center;
-  border-radius: 0 !important;
-  color: rgb(255 255 255 / 0.86) !important;
-  background: rgb(255 255 255 / 0.09) !important;
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.14);
-  transition:
-    background-color 140ms ease-out,
-    color 140ms ease-out;
+  color: rgb(255 255 255 / 0.62) !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  transition: color 140ms ease-out;
 }
 .muta-window.is-docked .view-header .clickable-icon:hover {
   color: #fff !important;
-  background: rgb(255 255 255 / 0.18) !important;
 }
 .muta-window.is-docked .view-header .clickable-icon:active {
-  background: rgb(255 255 255 / 0.26) !important;
+  color: rgb(255 255 255 / 0.5) !important;
 }
-/* Each pair's outer ends rounded, so the two make one capsule; a hairline between them. */
-.muta-window.is-docked .view-header .view-header-nav-buttons > .clickable-icon:first-child,
-.muta-window.is-docked .view-header .view-actions > .view-action:not(.muta-close, .muta-more) {
-  border-radius: 13px 0 0 13px !important;
-}
-.muta-window.is-docked .view-header .view-header-nav-buttons > .clickable-icon:last-child,
-.muta-window.is-docked .view-header .muta-more {
-  border-radius: 0 13px 13px 0 !important;
-  border-left: 1px solid rgb(255 255 255 / 0.1) !important;
+.muta-window.is-docked .view-header-nav-buttons > .clickable-icon.is-disabled,
+.muta-window.is-docked .view-header-nav-buttons > .clickable-icon[aria-disabled="true"] {
+  color: rgb(255 255 255 / 0.25) !important;
 }
 .muta-window.is-docked .view-header .muta-more {
   min-width: 34px !important;
   margin: 0 !important;
 }
-.muta-window.is-docked .view-header-nav-buttons > .clickable-icon.is-disabled,
-.muta-window.is-docked .view-header-nav-buttons > .clickable-icon[aria-disabled="true"] {
-  color: rgb(255 255 255 / 0.32) !important;
-}
 /*
- * Always shown while the window is out of the notch, each capsule centred in
+ * Always shown while the window is out of the notch, each pair centred in
  * the band beside the notch (the notch sits in the middle of the window).
  */
 .muta-window.is-docked .view-header {
@@ -451,8 +435,8 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
   left: calc(100% - var(--muta-side) / 2);
 }
 /*
- * Growing out of the notch, they spring out of it sideways: the left capsule
- * from its right, the right one (two buttons, moving as one) from its left.
+ * Growing out of the notch, they spring out of it sideways: the left pair
+ * from its right, the right pair from its left.
  * Going back in, they go at once.
  */
 .muta-window.is-docked :is(.view-header-nav-buttons, .view-action:not(.muta-close)) {
