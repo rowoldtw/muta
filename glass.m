@@ -20,8 +20,11 @@
 //   glass.shape(win.getNativeWindowHandle(), { left, right, bottom, shoulder, radius, lift, x1, y1, x2, y2 }, seconds)
 //   glass.notches() → [{ x, y, width, height }], in Electron's screen coordinates
 //   glass.panel(win.getNativeWindowHandle(), { show, x, y, width, height, radius,
-//               fromX, fromY, fromWidth, fromHeight, fromRadius, seconds, x1, y1, x2, y2, material, dark })
-//     A panel of macOS's own material (a menu's, by default) behind the page,
+//               fromX, fromY, fromWidth, fromHeight, fromRadius, seconds, x1, y1, x2, y2, material, dark,
+//               glass, clear, tint, circular })
+//     A panel of macOS's own material (a menu's, by default; Liquid Glass with
+//     glass, clear for its clear style, tint its dark or light tint's alpha;
+//     circular: plain round corners, to match the page's) behind the page,
 //     over the glass, at the rect (from the page's top left), growing from the
 //     from-rect over seconds along the curve; show false shrinks it back into
 //     the from-rect and takes it away. The page leaves a hole over it.
@@ -446,18 +449,33 @@ static napi_value panel(napi_env env, napi_callback_info info) {
   NSRect from = fromTop(root, number(env, o, "fromX", 0), number(env, o, "fromY", 0), number(env, o, "fromWidth", 0),
                         number(env, o, "fromHeight", 0));
   double fromRadius = number(env, o, "fromRadius", 0);
-  NSVisualEffectView* p = nil;
+  bool dark = flag(env, o, "dark", true);
+  bool wantGlass = false;
+  if (@available(macOS 26.0, *)) wantGlass = flag(env, o, "glass", false);
+  NSView* p = nil;
   for (NSView* v in root.subviews)
-    if ([v.identifier isEqualToString:kPanel]) p = (NSVisualEffectView*)v;
+    if ([v.identifier isEqualToString:kPanel]) p = v;
+  // The other kind than asked for: made again.
+  bool isGlass = false;
+  if (@available(macOS 26.0, *)) isGlass = [p isKindOfClass:NSGlassEffectView.class];
+  if (p && isGlass != wantGlass) {
+    [p removeFromSuperview];
+    p = nil;
+  }
   int generation = ++panelGeneration;
   if (!p) {
     if (!show) return result(env, false);
-    p = [[NSVisualEffectView alloc] initWithFrame:from];
+    if (@available(macOS 26.0, *)) {
+      if (wantGlass) p = [[NSGlassEffectView alloc] initWithFrame:from];
+    }
+    if (!p) {
+      NSVisualEffectView* blur = [[NSVisualEffectView alloc] initWithFrame:from];
+      blur.blendingMode = NSVisualEffectBlendingModeBehindWindow;
+      blur.state = NSVisualEffectStateActive;
+      p = blur;
+    }
     p.identifier = kPanel;
-    p.blendingMode = NSVisualEffectBlendingModeBehindWindow;
-    p.state = NSVisualEffectStateActive;
     p.wantsLayer = YES;
-    p.layer.cornerCurve = kCACornerCurveContinuous;
     p.layer.masksToBounds = YES;
     p.layer.cornerRadius = fromRadius;
     p.alphaValue = 0;
@@ -466,8 +484,19 @@ static napi_value panel(napi_env env, napi_callback_info info) {
     if (glass) [root addSubview:p positioned:NSWindowAbove relativeTo:glass];
     else [root addSubview:p positioned:NSWindowBelow relativeTo:nil];
   }
-  p.material = (NSVisualEffectMaterial)number(env, o, "material", NSVisualEffectMaterialMenu);
-  p.appearance = [NSAppearance appearanceNamed:flag(env, o, "dark", true) ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+  p.layer.cornerCurve = flag(env, o, "circular", false) ? kCACornerCurveCircular : kCACornerCurveContinuous;
+  if ([p isKindOfClass:NSVisualEffectView.class])
+    ((NSVisualEffectView*)p).material = (NSVisualEffectMaterial)number(env, o, "material", NSVisualEffectMaterialMenu);
+  if (@available(macOS 26.0, *)) {
+    if ([p isKindOfClass:NSGlassEffectView.class]) {
+      NSGlassEffectView* g = (NSGlassEffectView*)p;
+      g.style = flag(env, o, "clear", true) ? NSGlassEffectViewStyleClear : NSGlassEffectViewStyleRegular;
+      double tint = number(env, o, "tint", 0);
+      g.tintColor = tint > 0 ? [NSColor colorWithWhite:dark ? 0 : 1 alpha:tint] : nil;
+      g.cornerRadius = show ? number(env, o, "radius", 10) : fromRadius;
+    }
+  }
+  p.appearance = [NSAppearance appearanceNamed:dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
   NSRect to = show ? fromTop(root, number(env, o, "x", 0), number(env, o, "y", 0), number(env, o, "width", 0),
                              number(env, o, "height", 0))
                    : from;

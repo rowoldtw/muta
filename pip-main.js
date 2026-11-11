@@ -53,8 +53,8 @@ html, body { margin: 0; height: 100%; background: transparent; overflow: hidden;
   font: 12px -apple-system, system-ui, sans-serif; -webkit-font-smoothing: antialiased; cursor: default; user-select: none; }
 #menu { position: absolute; inset: 0; border-radius: var(--radius); overflow: hidden; display: flex; }
 #menu::before { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
-  background: rgb(var(--frame) / calc(var(--darkness) * 0.6));
-  box-shadow: inset 0 0 0 1px rgb(var(--ink) / 0.1), inset 0 1px 0 rgb(var(--ink) / 0.08); }
+  background: rgb(var(--frame) / calc(var(--darkness) * 0.25));
+  box-shadow: inset 0 0 0 1px rgb(var(--ink) / 0.12); }
 #list { position: relative; flex: 1; overflow-y: auto; padding: 5px; scrollbar-width: none;
   -webkit-mask-image: linear-gradient(transparent, black 10px, black calc(100% - 10px), transparent); }
 .group { padding: 7px 8px 3px 24px; color: rgb(var(--ink) / 0.42); font-size: 11px; font-weight: 600;
@@ -823,6 +823,11 @@ class Pip {
         x2,
         y2,
         dark: dark !== false,
+        // Liquid Glass, like the window's own, clear, lightly tinted; round corners like the page's border.
+        glass: true,
+        clear: true,
+        tint: 0.18,
+        circular: true,
       })
     } catch {}
   }
