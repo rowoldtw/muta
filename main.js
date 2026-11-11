@@ -203,16 +203,17 @@ const MUTA_DIR = ".muta"
 /** Marks Muta's hooks in Claude Code's settings, so they can be found and taken out again. */
 const HOOK_MARK = "muta-claude-hook"
 /** The Claude Code events Muta listens for, and the hook script that passes each on (to ~/.muta/claude-events.jsonl, one per line). */
-const HOOK_EVENTS = ["UserPromptSubmit", "PreToolUse", "PostToolUse", "Notification", "PermissionRequest", "Stop", "SessionEnd"]
+const HOOK_EVENTS = ["UserPromptSubmit", "PreToolUse", "PostToolUse", "PermissionRequest", "Stop", "SessionEnd"]
 /**
- * Claude Code's PermissionRequest hook: passes the request on, then waits
- * (up to 10 minutes) for an answer from the window in ~/.muta/answers/<id>
- * and gives it to Claude Code. The terminal's own prompt stays up meanwhile;
- * whichever is answered first counts, and Muta sends "skip" once the session
- * carries on, so the script stops waiting.
+ * Claude Code's questions (its AskUserQuestion tool, through the
+ * PermissionRequest hook): the script passes the question on, then waits (up
+ * to 10 minutes) for an answer from the window in ~/.muta/answers/<id> and
+ * gives it to Claude Code. The terminal asks too meanwhile; whichever is
+ * answered first counts, and Muta sends "skip" once the session carries on,
+ * so the script stops waiting.
  */
-const PERMISSION_SCRIPT = `#!/bin/sh
-# Muta: lets Claude Code's permission prompts be answered from the Muta window too.
+const QUESTION_SCRIPT = `#!/bin/sh
+# Muta: lets the questions Claude Code asks be answered from the Muta window too.
 dir="$HOME/.muta"
 mkdir -p "$dir/answers"
 id="$$-$(date +%s)"
@@ -223,10 +224,7 @@ while [ $i -lt 1200 ]; do
   if [ -f "$dir/answers/$id" ]; then
     answer=$(cat "$dir/answers/$id")
     rm -f "$dir/answers/$id"
-    case "$answer" in
-      allow) printf '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}' ;;
-      deny) printf '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"Denied from the Muta window."}}}' ;;
-    esac
+    [ "$answer" != "skip" ] && printf '%s' "$answer"
     exit 0
   fi
   sleep 0.5
@@ -362,13 +360,15 @@ class AgentWatch {
     const path = require("path")
     const dir = path.join(this.homeDir(), MUTA_DIR)
     const events = path.join(dir, "claude-hook.sh")
-    const permission = path.join(dir, "claude-permission.sh")
+    const question = path.join(dir, "claude-question.sh")
     if (on) {
       writeScript(events, HOOK_SCRIPT)
-      writeScript(permission, PERMISSION_SCRIPT)
+      writeScript(question, QUESTION_SCRIPT)
     }
+    // The permission script of an earlier version: gone.
+    require("fs").rmSync(path.join(dir, "claude-permission.sh"), { force: true })
     editJson(this.claudeSettingsPath(), "Claude Code's settings.json", (settings) =>
-      withHooks(settings, on ? `sh "${events}" # ${HOOK_MARK}` : null, on ? `sh "${permission}" # ${HOOK_MARK}` : null)
+      withHooks(settings, on ? `sh "${events}" # ${HOOK_MARK}` : null, on ? `sh "${question}" # ${HOOK_MARK}` : null)
     )
     this.hooksChecked = null
   }
@@ -395,20 +395,28 @@ class AgentWatch {
     editJson(this.cursorHooksPath(), "Cursor's hooks.json", (config) => withCursorHooks(config, on ? script : null))
   }
 
-  /** Answers a permission request from the window: "allow", "deny", or "skip" (stop waiting). */
-  answer(ask, decision) {
+  /**
+   * Answers a question from the window: answers maps each question's text to
+   * the chosen label (or labels, or typed text); "skip" lets the script stop
+   * waiting (answered in the terminal).
+   */
+  answer(ask, answers) {
     if (!/^[\w-]+$/.test(ask)) return
     const fs = require("fs")
     const path = require("path")
+    let questions = []
+    for (const session of this.hookSessions.values())
+      if (session.attention && session.attention.ask === ask) questions = session.attention.questions
+    const text = answers === "skip" ? "skip" : JSON.stringify(questionAnswer(questions, answers))
     const dir = path.join(this.homeDir(), MUTA_DIR, "answers")
     try {
       fs.mkdirSync(dir, { recursive: true })
-      fs.writeFileSync(path.join(dir, ask), decision)
+      fs.writeFileSync(path.join(dir, ask), text)
     } catch {}
     // Answered: no longer waiting on the user (until the session says otherwise).
     for (const [id, session] of this.hookSessions)
       if (session.attention && session.attention.ask === ask) this.hookSessions.set(id, { ...session, attention: null })
-    if (decision !== "skip") this.poll()
+    if (answers !== "skip") this.poll()
   }
 
   /** Reads the hook events (Claude Code's and Cursor's) written since last time. */
@@ -419,7 +427,7 @@ class AgentWatch {
       const before = this.hookSessions.get(id)
       const after = claudeHookEvent(before, { ...e.hook, muta_ask: e.ask }, e.at || Date.now())
       this.hookSessions.set(id, after)
-      // A permission request answered in the terminal: its hook script can stop waiting for the window.
+      // A question answered in the terminal: its hook script can stop waiting for the window.
       const was = before && before.attention && before.attention.ask
       if (was && (!after.attention || after.attention.ask !== was)) this.answer(was, "skip")
     }
@@ -942,9 +950,9 @@ class AgentWatch {
 /**
  * A Claude Code session after hook event hook (at: when, ms), from session
  * (or none yet). A prompt or a tool starts or continues a turn; Stop ends it;
- * SessionEnd ends the session. A notification asking for permission (or
- * any other input mid-turn) needs the user's attention until the next tool
- * or prompt. Edits (Edit, MultiEdit, Write) say which files, and what's new.
+ * SessionEnd ends the session. A question (AskUserQuestion, through the
+ * PermissionRequest hook) needs the user until the next tool or prompt.
+ * Edits (Edit, MultiEdit, Write) say which files, and what's new.
  */
 function claudeHookEvent(session, hook, at) {
   const s = session
@@ -964,27 +972,10 @@ function claudeHookEvent(session, hook, at) {
     s.working = false
     s.attention = null
     s.ended = true
-  } else if (event === "PermissionRequest") {
-    // Asking now (the Notification comes only after ~6s): answerable from the window.
-    const input = hook.tool_input || {}
-    const tool = hook.tool_name || "a tool"
-    const detail = input.command || input.file_path || input.url || input.description || input.pattern || ""
+  } else if (event === "PermissionRequest" && hook.tool_name === "AskUserQuestion") {
+    // A question: answerable from the window when it came through Muta's question script.
     s.working = true
-    s.attention = {
-      message: detail ? `${tool}: ${detail}` : `Use ${tool}`,
-      tool,
-      detail: String(detail),
-      ask: hook.muta_ask || null,
-      // These need an answer only the terminal can give (Claude Code wants their input rewritten).
-      answerable: !!hook.muta_ask && !/^(AskUserQuestion|ExitPlanMode)$/.test(tool),
-    }
-  } else if (event === "Notification") {
-    const type = hook.notification_type || ""
-    const message = String(hook.message || "")
-    // Its idle reminder (after a turn has ended) isn't a question.
-    const asking = type ? type !== "idle_prompt" && type !== "auth_success" : !/waiting for your input/i.test(message)
-    // A request already being asked (PermissionRequest) keeps its details.
-    if (asking && s.working && !(s.attention && s.attention.ask)) s.attention = { message: message || "Needs your input", answerable: false }
+    s.attention = { questions: (hook.tool_input && hook.tool_input.questions) || [], ask: hook.muta_ask || null }
   }
   if (event === "PreToolUse" && /^(Edit|MultiEdit|Write)$/.test(hook.tool_name || "")) {
     const input = hook.tool_input || {}
@@ -999,19 +990,21 @@ function claudeHookEvent(session, hook, at) {
  * Claude Code's settings with Muta's hooks in (running command) or taken out
  * (command null), leaving every other hook as it is.
  */
-function withHooks(settings, command, permissionCommand = command) {
+function withHooks(settings, command, questionCommand = command) {
   const next = { ...settings, hooks: { ...(settings.hooks || {}) } }
   const ours = (group) => (group.hooks || []).some((h) => String(h.command || "").includes(HOOK_MARK))
-  for (const event of HOOK_EVENTS) {
+  // Notification: an earlier version's, taken out.
+  for (const event of [...HOOK_EVENTS, "Notification"]) {
     const groups = (next.hooks[event] || []).filter((g) => !ours(g))
-    if (command) {
-      // The permission hook waits for an answer from the window (up to 10 minutes).
+    if (command && HOOK_EVENTS.includes(event)) {
+      // Only questions go to the question script, which waits for an answer from the window (up to 10 minutes).
       const hook =
         event === "PermissionRequest"
-          ? { type: "command", command: permissionCommand, timeout: 610 }
+          ? { type: "command", command: questionCommand, timeout: 610 }
           : { type: "command", command, timeout: 5 }
       const group = { hooks: [hook] }
-      if (event === "PreToolUse" || event === "PostToolUse" || event === "PermissionRequest") group.matcher = "*"
+      if (event === "PreToolUse" || event === "PostToolUse") group.matcher = "*"
+      if (event === "PermissionRequest") group.matcher = "AskUserQuestion"
       groups.push(group)
     }
     if (groups.length) next.hooks[event] = groups
@@ -1019,6 +1012,43 @@ function withHooks(settings, command, permissionCommand = command) {
   }
   if (!Object.keys(next.hooks).length) delete next.hooks
   return next
+}
+
+/** How each agent starts in a terminal with a first prompt (the prompt follows, quoted). */
+const AGENT_LAUNCH = {
+  claude: "claude",
+  codex: "codex",
+  opencode: "opencode --prompt",
+  cursor: "cursor-agent",
+  antigravity: "agy -i",
+}
+
+/** The first prompt for an agent sent a note: what it is and where, and the note itself. */
+function agentPrompt(title, file, content) {
+  return `Work on "${title}", from my notes (${file}):\n\n${content.trim()}\n`
+}
+
+/** The git repository folder dir is in, or null. */
+function gitRoot(dir) {
+  const fs = require("fs")
+  const path = require("path")
+  for (let d = dir; d && d !== path.dirname(d); d = path.dirname(d)) if (fs.existsSync(path.join(d, ".git"))) return d
+  return null
+}
+
+/** s for a POSIX shell, in single quotes. */
+const shellQuote = (s) => `'${String(s).replace(/'/g, "'\\''")}'`
+/** s as an AppleScript string. */
+const appleQuote = (s) => `"${String(s).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`
+
+/** What the question script gives Claude Code: the questions, answered (answers: question text → label(s) or typed text). */
+function questionAnswer(questions, answers) {
+  return {
+    hookSpecificOutput: {
+      hookEventName: "PermissionRequest",
+      decision: { behavior: "allow", updatedInput: { questions, answers } },
+    },
+  }
 }
 
 /** Cursor's hooks.json with Muta's hooks in (running script) or taken out (script null), leaving every other hook. */
@@ -1276,74 +1306,46 @@ module.exports = class extends Plugin {
     if (!doc || doc === document) return
     const { agent } = this
     doc.body.classList.toggle("has-agent", !!agent)
-    // One waiting on you leaves the beams to those still working.
+    // One asking you something leaves the beams to those still working.
     this.showBeams(doc, agent ? agent.all.filter((a) => !a.attention) : [])
     this.showAsk(doc, agent ? agent.all.find((a) => a.attention) : null)
   }
 
   /**
-   * An agent waiting on you (a permission, a question): it leaves the beams
-   * to the agents still working, a wave in its colours breathes along the
-   * window's bottom edge, and the bottom bar's name becomes the request.
-   * Clicking it raises the request over the page (openAsk()).
+   * An agent asking you a question: it leaves the beams to the agents still
+   * working, and the bottom bar shows that it's asking, in the name's place.
+   * Clicking that opens the question (openAsk()).
    */
   showAsk(doc, asking) {
     const body = doc.body
     const sw = this.ui && this.ui.switcher
+    const before = this.asking && this.asking.attention.ask
     this.asking = asking || null
     body.classList.toggle("has-ask", !!asking)
-    let wave = body.querySelector(":scope > .muta-ask-wave")
-    if (asking && !wave) wave = body.createDiv({ cls: "muta-ask-wave" })
-    if (wave) wave.dataset.agent = asking ? asking.kind : wave.dataset.agent || ""
     if (asking && sw) {
       sw.ask.dataset.agent = asking.kind
-      sw.askText.setText(`${AGENT_NAMES[asking.kind]} · ${asking.attention.tool || "needs you"}`)
-      sw.ask.setAttribute("aria-label", `${AGENT_NAMES[asking.kind]} needs you: ${asking.attention.message}`)
+      const q = asking.attention.questions[0]
+      sw.askText.setText(`${AGENT_NAMES[asking.kind]} asks${q && q.header ? ` · ${q.header}` : ""}`)
+      sw.ask.setAttribute("aria-label", `${AGENT_NAMES[asking.kind]} asks: ${q ? q.question : ""}`)
     }
-    const panel = this.askPanel
-    if (panel && panel.isConnected && body.classList.contains("is-ask-open")) {
-      if (!asking) this.closeAsk()
-      else this.fillAsk(asking)
-    }
-  }
-
-  /** The request's panel over the page: what the agent wants, and Deny and Allow when it can be answered from here. */
-  fillAsk(asking) {
-    const panel = this.askPanel
-    const a = asking.attention
-    panel.dataset.agent = asking.kind
-    const body = panel.querySelector(".muta-ask-body")
-    body.empty()
-    const who = body.createDiv({ cls: "muta-ask-agent" })
-    who.createSpan({ cls: "muta-ask-dot" })
-    who.createSpan({ text: AGENT_NAMES[asking.kind] })
-    body.createDiv({ cls: "muta-ask-title", text: a.tool ? `wants to use ${a.tool}` : "needs you" })
-    const detail = a.detail || (a.tool ? "" : a.message)
-    if (detail) body.createEl("pre", { cls: "muta-ask-detail", text: detail })
-    if (a.answerable && a.ask) {
-      const actions = body.createDiv({ cls: "muta-ask-actions" })
-      const deny = actions.createEl("button", { cls: "muta-ask-deny", text: "Deny" })
-      const allow = actions.createEl("button", { cls: "muta-ask-allow mod-cta", text: "Allow" })
-      deny.addEventListener("click", () => this.answerAsk(a.ask, "deny"))
-      allow.addEventListener("click", () => this.answerAsk(a.ask, "allow"))
-    } else body.createDiv({ cls: "muta-ask-note", text: `Answer this in ${AGENT_NAMES[asking.kind]}.` })
+    // Answered (here or in the terminal), or a new question: the open one goes.
+    if (body.classList.contains("is-ask-open") && (!asking || asking.attention.ask !== before)) this.closeAsk()
   }
 
   /**
-   * Raises the request over the page like a wave out of the bottom bar's
-   * button (after Waves, libraries.dev/waves): the panel grows from the
-   * button, a band of the agent's colours running ahead of its edge.
+   * The question, over the page above the bottom bar, grown out of its
+   * button: each question with its options (one, or several when it allows
+   * that) and a field to type an answer of your own, and Send.
    */
   openAsk() {
     const sw = this.ui && this.ui.switcher
-    if (!sw || !this.asking) return
+    const asking = this.asking
+    if (!sw || !asking) return
     const doc = sw.el.ownerDocument
+    if (doc.body.classList.contains("is-ask-open")) return this.closeAsk()
     let panel = this.askPanel
     if (!panel || !panel.isConnected) {
       panel = this.askPanel = doc.body.createDiv({ cls: "muta-ask-panel" })
-      panel.createDiv({ cls: "muta-ask-rim" })
-      panel.createDiv({ cls: "muta-ask-body" })
-      // A click outside it, or Escape, puts it back without answering.
       doc.addEventListener("pointerdown", (e) => {
         if (doc.body.classList.contains("is-ask-open") && !panel.contains(e.target) && !sw.ask.contains(e.target)) this.closeAsk()
       }, true)
@@ -1351,23 +1353,73 @@ module.exports = class extends Plugin {
         if (e.key === "Escape" && doc.body.classList.contains("is-ask-open")) this.closeAsk()
       })
     }
-    this.fillAsk(this.asking)
-    // The wave starts at the button.
+    panel.empty()
+    panel.dataset.agent = asking.kind
+    const who = panel.createDiv({ cls: "muta-ask-agent" })
+    who.createSpan({ cls: "muta-ask-dot" })
+    who.createSpan({ text: `${AGENT_NAMES[asking.kind]} asks` })
+    const { questions, ask } = asking.attention
+    const chosen = new Map(questions.map((q) => [q.question, new Set()]))
+    const typed = new Map()
+    const send = panel.createEl("button", { cls: "muta-ask-send", text: "Send" })
+    const ready = () => questions.every((q) => chosen.get(q.question).size || (typed.get(q.question) || "").trim())
+    const refresh = () => (send.disabled = !ready())
+    for (const q of questions) {
+      const block = panel.createDiv({ cls: "muta-ask-question" })
+      block.createDiv({ cls: "muta-ask-text", text: q.question })
+      const options = block.createDiv({ cls: "muta-ask-options" })
+      for (const o of q.options || []) {
+        const b = options.createEl("button", { cls: "muta-ask-option" })
+        b.createSpan({ cls: "muta-ask-label", text: o.label })
+        if (o.description) b.createSpan({ cls: "muta-ask-description", text: o.description })
+        b.addEventListener("click", () => {
+          const set = chosen.get(q.question)
+          if (q.multiSelect) set.has(o.label) ? set.delete(o.label) : set.add(o.label)
+          else {
+            set.clear()
+            set.add(o.label)
+            options.querySelectorAll(".is-chosen").forEach((x) => x.removeClass("is-chosen"))
+          }
+          b.toggleClass("is-chosen", set.has(o.label))
+          refresh()
+        })
+      }
+      const other = block.createEl("input", { cls: "muta-ask-other", attr: { type: "text", placeholder: "Or type an answer…" } })
+      other.addEventListener("input", () => {
+        typed.set(q.question, other.value)
+        refresh()
+      })
+      other.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && ready()) send.click()
+      })
+    }
+    panel.appendChild(send)
+    refresh()
+    send.addEventListener("click", () => {
+      const answers = {}
+      for (const q of questions) {
+        const own = (typed.get(q.question) || "").trim()
+        const picked = [...chosen.get(q.question)]
+        answers[q.question] = own || (q.multiSelect ? picked : picked[0])
+      }
+      this.agents.answer(ask, answers)
+      this.closeAsk()
+    })
+    // It grows out of the button.
     const b = sw.ask.getBoundingClientRect()
+    doc.body.classList.add("is-ask-open")
     const p = panel.getBoundingClientRect()
-    panel.style.setProperty("--muta-wave-x", `${b.left + b.width / 2 - p.left}px`)
-    panel.style.setProperty("--muta-wave-y", `${b.top + b.height / 2 - p.top}px`)
-    doc.body.classList.toggle("is-ask-open")
+    const inset = (r) => `inset(${r.top - p.top}px ${p.right - r.right}px ${p.bottom - r.bottom}px ${r.left - p.left}px round 12px)`
+    if (!reduceMotion())
+      panel.animate([{ clipPath: inset(b), opacity: 0.6 }, { clipPath: "inset(0 round 12px)", opacity: 1 }], {
+        duration: 340,
+        easing: "cubic-bezier(0.32, 0.72, 0, 1)",
+      })
   }
 
   closeAsk() {
     const doc = this.askPanel && this.askPanel.ownerDocument
     if (doc) doc.body.classList.remove("is-ask-open")
-  }
-
-  answerAsk(ask, decision) {
-    this.agents.answer(ask, decision)
-    this.closeAsk()
   }
 
   /** An agent changed a note in the vault: kept a while, and lit at once if it's the note on show. */
@@ -1509,6 +1561,7 @@ module.exports = class extends Plugin {
     await leaf.openFile(file, { active: false, state: { mode: "preview" } })
     this.attach()
     this.addCloseButton()
+    this.addSendButton()
     this.showAgent()
     const raf = leaf.view.containerEl.win || window
     if (this.updateFades) raf.setTimeout(this.updateFades, 50)
@@ -2377,6 +2430,57 @@ module.exports = class extends Plugin {
    * A close button in the top bar's right corner (the next hovered link opens
    * the window again), and the page's menu moved to its left corner.
    */
+  /** Send to agent: the note on show as the start of a new agent session (sendMenu()). */
+  addSendButton() {
+    const view = this.leaf && this.leaf.view
+    if (!view || !view.addAction || view.mutaSend) return
+    view.mutaSend = view.addAction("send", "Send to agent", (event) => this.sendMenu(event, view.mutaSend))
+    view.mutaSend.addClass("muta-send")
+  }
+
+  /** The agents to send the note to: those turned on in Settings › AI. */
+  sendMenu(event, button) {
+    const s = this.settings
+    const on = { claude: s.agentClaude, codex: s.agentCodex, opencode: s.agentOpencode, cursor: s.agentCursor, antigravity: s.agentAntigravity }
+    const menu = new Menu()
+    for (const kind of Object.keys(AGENT_LAUNCH))
+      if (on[kind])
+        menu.addItem((item) => item.setTitle(`Send to ${AGENT_NAMES[kind]}`).setIcon("bot").onClick(() => this.sendToAgent(kind)))
+    const r = button.getBoundingClientRect()
+    menu.showAtPosition({ x: r.left, y: r.bottom + 4 }, button.ownerDocument)
+  }
+
+  /**
+   * Starts agent kind on the note on show, in a new Terminal window, in the
+   * note's project (the git repository its file is in, through any symlinks,
+   * else the vault): the note, with where it is, as the first prompt. The
+   * session is the agent's own, to carry on in the terminal.
+   */
+  async sendToAgent(kind) {
+    const file = this.leaf && this.leaf.view.file
+    if (!file) return
+    const fs = require("fs")
+    const path = require("path")
+    const base = this.app.vault.adapter.getBasePath()
+    let real = path.join(base, file.path)
+    try {
+      real = fs.realpathSync(real)
+    } catch {}
+    const dir = gitRoot(path.dirname(real)) || base
+    const content = await this.app.vault.read(file)
+    const prompt = agentPrompt(file.basename, real, content)
+    const prompts = path.join(require("os").homedir(), MUTA_DIR, "prompts")
+    fs.mkdirSync(prompts, { recursive: true })
+    const promptFile = path.join(prompts, `${Date.now()}-${kind}.md`)
+    fs.writeFileSync(promptFile, prompt)
+    const command = `cd ${shellQuote(dir)} && ${AGENT_LAUNCH[kind]} "$(cat ${shellQuote(promptFile)})"`
+    const script = `tell application "Terminal"\nactivate\ndo script ${appleQuote(command)}\nend tell`
+    require("child_process").execFile("/usr/bin/osascript", ["-e", script], (error) => {
+      if (error) new Notice(`Muta: couldn't open Terminal (${error.message})`)
+    })
+    new Notice(`Muta: sent "${file.basename}" to ${AGENT_NAMES[kind]}`)
+  }
+
   addCloseButton() {
     const view = this.leaf && this.leaf.view
     if (!view || !view.addAction || view.mutaClose) return
@@ -2962,9 +3066,8 @@ class MutaSettings extends PluginSettingTab {
           .setName("Claude Code hooks")
           .setDesc(
             "Adds hooks to Claude Code's settings (~/.claude/settings.json) that tell Muta the moment a session " +
-              "starts, edits a note, stops, or needs you, and let you allow or deny its permission requests from the " +
-              "window (the terminal still asks too; whichever you answer first counts). The events go to ~/.muta and " +
-              "are deleted once read."
+              "starts, edits a note or stops, and let you answer the questions it asks from the window (the terminal " +
+              "still asks too; whichever you answer first counts). The events go to ~/.muta and are deleted once read."
           )
           .addToggle((t) =>
             t.setValue(plugin.agents.hooksInstalled()).onChange((v) => {
@@ -3046,4 +3149,4 @@ class MutaSettings extends PluginSettingTab {
 }
 
 // For the tests (test/): the parts that don't need a window.
-module.exports.testing = { AgentWatch, bouncePath, rubberBand, within, BOUNCE_MAX, AGENT_STALE_MS, claudeHookEvent, cursorHookEvent, withHooks, withCursorHooks, changedLines, HOOK_MARK, CURSOR_HOOK_MARK }
+module.exports.testing = { AgentWatch, bouncePath, rubberBand, within, BOUNCE_MAX, AGENT_STALE_MS, claudeHookEvent, cursorHookEvent, withHooks, withCursorHooks, changedLines, questionAnswer, agentPrompt, gitRoot, shellQuote, appleQuote, AGENT_LAUNCH, HOOK_MARK, CURSOR_HOOK_MARK }

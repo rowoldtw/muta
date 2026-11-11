@@ -96,5 +96,6 @@ Working in any vault and theme, and a look of its own. Planned as 1.3.0. Lines m
 > - *Proposed:* "Copper by shadcn" parody.
 > - [ ] [View running agents](features/Phase%203/View%20running%20agents.md): See the coding agents you have running, and what each is doing, from the floating window.
 > - [x] [Agent beam](features/Phase%203/Agent%20beam.md): While a local agent works in the vault, a beam of light in its colours rides round the window's edge, one per agent.
->   - [x] [Agent needs attention](features/Phase%203/Agent%20needs%20attention.md): When an agent needs you, a wave in its colours breathes along the window's bottom, and you can allow or deny it from the window.
->   - [x] [See what changed](features/Phase%203/See%20what%20changed.md): The lines an agent just changed on the page you're reading glow for a moment in its colour.
+>   - [x] [Answer agent questions](features/Phase%203/Answer%20agent%20questions.md): When Claude Code asks you a question, answer it from the window: pick an option, or type your own.
+>   - [x] [Send to agent](features/Phase%203/Send%20to%20agent.md): Send the note on show to a coding agent: it starts in Terminal, in the note's project, with the note as its first prompt.
+>   - [x] [See what changed](features/Phase%203/See%20what%20changed.md): What an agent just changed on the page you're reading glows for a moment in its colour.

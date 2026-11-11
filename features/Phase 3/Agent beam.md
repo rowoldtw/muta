@@ -3,7 +3,8 @@ status: done
 native: false
 area: Triage
 subfeatures:
-  - "[[Agent needs attention]]"
+  - "[[Answer agent questions]]"
+  - "[[Send to agent]]"
   - "[[See what changed]]"
 ---
 

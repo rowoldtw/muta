@@ -7,7 +7,7 @@ const os = require("os")
 const path = require("path")
 const { execFileSync } = require("child_process")
 const { testing, TFile } = require("./setup.js")
-const { claudeHookEvent, cursorHookEvent, withHooks, withCursorHooks, HOOK_MARK, CURSOR_HOOK_MARK, AgentWatch } = testing
+const { claudeHookEvent, cursorHookEvent, withHooks, withCursorHooks, questionAnswer, HOOK_MARK, CURSOR_HOOK_MARK, AgentWatch } = testing
 
 const run = (events) => events.reduce((s, [hook_event_name, extra = {}], i) => claudeHookEvent(s, { session_id: "s1", cwd: "/v", hook_event_name, ...extra }, 1000 + i), undefined)
 
@@ -17,21 +17,6 @@ test("a prompt starts a turn, tools continue it, Stop ends it, SessionEnd ends t
   expect(run([["UserPromptSubmit"], ["Stop"]]).working).toBe(false)
   const ended = run([["UserPromptSubmit"], ["SessionEnd"]])
   expect([ended.working, ended.ended]).toEqual([false, true])
-})
-
-test("asking for permission mid-turn needs attention until it carries on", () => {
-  const asking = run([["UserPromptSubmit"], ["Notification", { notification_type: "permission_prompt", message: "Claude needs your permission to use Bash" }]])
-  expect(asking.attention).toEqual({ message: "Claude needs your permission to use Bash", answerable: false })
-  expect(asking.working).toBe(true)
-  const resumed = run([["UserPromptSubmit"], ["Notification", { notification_type: "permission_prompt", message: "x" }], ["PreToolUse", { tool_name: "Bash" }]])
-  expect(resumed.attention).toBeNull()
-})
-
-test("the idle reminder after a turn isn't a question", () => {
-  expect(run([["UserPromptSubmit"], ["Stop"], ["Notification", { notification_type: "idle_prompt", message: "Claude is waiting for your input" }]]).attention).toBeNull()
-  // Older Claude Code, without notification_type: told apart by its message.
-  expect(run([["UserPromptSubmit"], ["Notification", { message: "Claude is waiting for your input" }]]).attention).toBeNull()
-  expect(run([["UserPromptSubmit"], ["Notification", { message: "Claude needs your permission to use Write" }]]).attention).not.toBeNull()
 })
 
 test("edits record the file and the new text", () => {
@@ -57,8 +42,12 @@ test("Muta's hooks go in beside the user's own, and come out leaving them", () =
   expect(added.hooks.Stop).toHaveLength(2)
   expect(added.hooks.Stop[0].hooks[0].command).toBe("say done")
   expect(added.hooks.PreToolUse[0]).toEqual({ matcher: "*", hooks: [{ type: "command", command, timeout: 5 }] })
-  // The permission hook waits for an answer from the window, so it gets a long timeout.
+  // Only questions go to the question script, which waits for an answer, so it gets a long timeout.
+  expect(added.hooks.PermissionRequest[0].matcher).toBe("AskUserQuestion")
   expect(added.hooks.PermissionRequest[0].hooks[0].timeout).toBe(610)
+  // An earlier version's Notification hook comes out.
+  const old = { hooks: { Notification: [{ hooks: [{ type: "command", command: command }] }] } }
+  expect(withHooks(old, command).hooks.Notification).toBeUndefined()
   // Adding again doesn't add twice.
   expect(withHooks(added, command).hooks.Stop).toHaveLength(2)
   const removed = withHooks(added, null)
@@ -107,9 +96,6 @@ test("installing writes the script and the hooks; the script's events are read b
   expect(edits.map((e) => [e.file.path, e.text])).toEqual([["Note.md", "Added"]])
   // Read once: the events file is gone.
   expect(fs.existsSync(path.join(home, ".muta", "claude-events.jsonl"))).toBe(false)
-  send({ session_id: "abc", cwd: vault, hook_event_name: "Notification", notification_type: "permission_prompt", message: "Claude needs your permission to use Bash" })
-  await w.poll()
-  expect(w.state.all[0].attention).toEqual({ message: "Claude needs your permission to use Bash", answerable: false })
   send({ session_id: "abc", cwd: vault, hook_event_name: "Stop" })
   await w.poll()
   expect(w.state).toBeNull()
@@ -124,16 +110,6 @@ test("an unreadable settings.json is left alone", () => {
   fs.writeFileSync(path.join(home, ".claude", "settings.json"), "{ not json")
   expect(() => w.setHooks(true)).toThrow()
   expect(fs.readFileSync(path.join(home, ".claude", "settings.json"), "utf8")).toBe("{ not json")
-})
-
-test("a permission request asks now, with what it wants, and can be answered from the window", () => {
-  const s = run([["UserPromptSubmit"], ["PermissionRequest", { tool_name: "Bash", tool_input: { command: "npm test" }, muta_ask: "123-456" }]])
-  expect(s.attention).toEqual({ message: "Bash: npm test", tool: "Bash", detail: "npm test", ask: "123-456", answerable: true })
-  // The Notification that follows ~6s later keeps the request's details.
-  const later = run([["UserPromptSubmit"], ["PermissionRequest", { tool_name: "Bash", tool_input: { command: "npm test" }, muta_ask: "1" }], ["Notification", { notification_type: "permission_prompt", message: "Claude needs your permission to use Bash" }]])
-  expect(later.attention.ask).toBe("1")
-  // Ones Claude Code wants rewritten input for are answered in the terminal.
-  expect(run([["PermissionRequest", { tool_name: "AskUserQuestion", tool_input: {}, muta_ask: "2" }]]).attention.answerable).toBe(false)
 })
 
 test("Cursor: a prompt starts a turn, tools and edits continue it, stop ends it", () => {
@@ -171,32 +147,47 @@ test("Cursor's hook script passes events on, and lets prompts through", async ()
   expect(w.state).toBeNull()
 })
 
-test("the permission script waits for the window's answer and gives it to Claude Code", async () => {
+test("a question needs the user until the session carries on; other permission requests don't", () => {
+  const questions = [{ question: "Which colour?", header: "Colour", options: [{ label: "Red" }, { label: "Blue" }], multiSelect: false }]
+  const asked = run([["UserPromptSubmit"], ["PermissionRequest", { tool_name: "AskUserQuestion", tool_input: { questions }, muta_ask: "1-2" }]])
+  expect(asked.attention).toEqual({ questions, ask: "1-2" })
+  expect(run([["UserPromptSubmit"], ["PermissionRequest", { tool_name: "AskUserQuestion", tool_input: { questions }, muta_ask: "1" }], ["PostToolUse"]]).attention).toBeNull()
+  expect(run([["UserPromptSubmit"], ["PermissionRequest", { tool_name: "Bash", tool_input: { command: "ls" } }]]).attention).toBeNull()
+})
+
+test("an answer is the questions, answered, as Claude Code takes it", () => {
+  const questions = [{ question: "Which colour?", header: "Colour", options: [], multiSelect: false }]
+  expect(questionAnswer(questions, { "Which colour?": "Blue" })).toEqual({
+    hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow", updatedInput: { questions, answers: { "Which colour?": "Blue" } } } },
+  })
+})
+
+test("the question script waits for the window's answer and gives it to Claude Code", async () => {
   const { w, vault } = watcher()
   fs.mkdirSync(path.join(home, ".claude"))
   w.setHooks(true)
-  const script = path.join(home, ".muta", "claude-permission.sh")
+  const script = path.join(home, ".muta", "claude-question.sh")
+  const questions = [{ question: "Which colour?", header: "Colour", options: [{ label: "Red" }, { label: "Blue" }], multiSelect: false }]
   const { spawn } = require("child_process")
-  const ask = (decision) =>
+  const ask = (answers) =>
     new Promise((resolve) => {
       const child = spawn("sh", [script], { env: { ...process.env, HOME: home } })
       let out = ""
       child.stdout.on("data", (d) => (out += d))
       child.on("close", () => resolve(out))
-      child.stdin.end(JSON.stringify({ session_id: "p1", cwd: vault, hook_event_name: "PermissionRequest", tool_name: "Bash", tool_input: { command: "npm test" } }))
-      // Muta sees the request, then answers it.
+      child.stdin.end(JSON.stringify({ session_id: "q1", cwd: vault, hook_event_name: "PermissionRequest", tool_name: "AskUserQuestion", tool_input: { questions } }))
+      // Muta sees the question, then answers it.
       const tick = setInterval(async () => {
         await w.poll()
         const a = w.state && w.state.all[0] && w.state.all[0].attention
         if (a && a.ask) {
           clearInterval(tick)
-          expect(a).toMatchObject({ tool: "Bash", detail: "npm test", answerable: true })
-          w.answer(a.ask, decision)
+          expect(a.questions).toEqual(questions)
+          w.answer(a.ask, answers)
         }
       }, 100)
     })
-  expect(JSON.parse(await ask("allow"))).toEqual({ hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow" } } })
-  expect(JSON.parse(await ask("deny")).hookSpecificOutput.decision.behavior).toBe("deny")
+  expect(JSON.parse(await ask({ "Which colour?": "Blue" }))).toEqual(questionAnswer(questions, { "Which colour?": "Blue" }))
   // "skip" (answered in the terminal): the script stops waiting and says nothing.
   expect(await ask("skip")).toBe("")
 }, 20000)
