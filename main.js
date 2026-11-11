@@ -48,8 +48,8 @@ const SWITCH = {
   sideways: { duration: 460, gap: 24, ease: "cubic-bezier(0.32, 0.72, 0, 1)" },
 }
 /** A flick into a page's end carries on past it and eases back: peaking after this long (ms), at most this far (px). */
-const BOUNCE_TAU_MS = 70
-const BOUNCE_MAX = 36
+const BOUNCE_TAU_MS = 80
+const BOUNCE_MAX = 40
 /** How much the page fades when pulled as far as it goes past its end. */
 const OVERSCROLL_FADE = 0.4
 /** How long after a bounce starts the trackpad's touch-down can still turn it into a pull (ms): it arrives late. */
@@ -198,7 +198,7 @@ const AGENT_ACTIVE_MS = 45000
 /** An edit this recent says which note an agent is working on (ms). */
 const AGENT_EDIT_MS = 300000
 /** How much of the end of a session's record is read the first time it's seen (bytes); after that, only what's been added. Claude Code's hold whole requests, a megabyte or more a line. */
-const AGENT_TAIL = 8 * 1024 * 1024
+const AGENT_TAIL = 4 * 1024 * 1024
 /** How many of a session's latest edits are kept. */
 const AGENT_EDITS = 20
 const AGENT_NAMES = { claude: "Claude Code", codex: "Codex", opencode: "OpenCode", antigravity: "Antigravity" }
@@ -236,8 +236,7 @@ class AgentWatch {
   }
 
   set(state) {
-    const e = state && state.edit
-    const key = state ? `${state.kind}|${e ? e.file.path + "|" + e.at : ""}|${state.all.map((a) => a.id).join(",")}` : ""
+    const key = state ? state.all.map((a) => a.id).join(",") : ""
     if (key === this.key) return
     this.key = key
     this.state = state
@@ -257,6 +256,8 @@ class AgentWatch {
         ...(s.agentOpencode ? await this.opencode(now) : []),
         ...(s.agentAntigravity ? await this.antigravity(now) : []),
       ]
+      // Stopped while the databases were being read: it stays stopped.
+      if (!this.timer) return
       let best = null
       const all = []
       for (const session of sessions) {
@@ -397,18 +398,22 @@ class AgentWatch {
     const fs = require("fs")
     const path = require("path")
     const out = []
-    let names = []
+    let entries = []
     try {
-      names = fs.readdirSync(dir)
+      entries = fs.readdirSync(dir, { withFileTypes: true })
     } catch {
       return out
     }
-    for (const name of names) {
-      const full = path.join(dir, name)
+    // Only session files are looked at (a folder can hold thousands of others).
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name)
       try {
-        const st = fs.statSync(full)
-        if (st.isDirectory() && depth > 0) out.push(...this.recent(full, now, test, depth - 1))
-        else if (st.isFile() && test(name) && now - st.mtimeMs < AGENT_STALE_MS) out.push({ file: full, at: st.mtimeMs })
+        if (entry.isDirectory()) {
+          if (depth > 0) out.push(...this.recent(full, now, test, depth - 1))
+        } else if (test(entry.name)) {
+          const at = fs.statSync(full).mtimeMs
+          if (now - at < AGENT_STALE_MS) out.push({ file: full, at })
+        }
       } catch {}
     }
     return out
@@ -728,6 +733,13 @@ module.exports = class extends Plugin {
       instance.onLinkHover = original
     })
     this.watchHoverKey(window)
+    // And Obsidian's other windows: open now, and opened later.
+    this.app.workspace.onLayoutReady(() =>
+      this.app.workspace.iterateAllLeaves((leaf) => {
+        const win = leaf.view && leaf.view.containerEl.win
+        if (win && win !== window) this.watchHoverKey(win)
+      })
+    )
     this.registerEvent(this.app.workspace.on("window-open", (w) => this.watchHoverKey(w.win)))
 
     // Switching Obsidian between light and dark switches the window's glass too.
@@ -764,6 +776,9 @@ module.exports = class extends Plugin {
    * a link previews it.
    */
   watchHoverKey(win) {
+    this.hoverKeyWins = this.hoverKeyWins || new WeakSet()
+    if (!win || this.hoverKeyWins.has(win)) return
+    this.hoverKeyWins.add(win)
     const track = (e) => {
       this.mods = { meta: e.metaKey, alt: e.altKey, ctrl: e.ctrlKey, shift: e.shiftKey }
     }
@@ -1110,7 +1125,14 @@ module.exports = class extends Plugin {
     win.clearTimeout(this.menuClosing)
     body.classList.remove("is-menu-closing")
     body.classList.add("is-switcher-open")
+    const ask = (this.menuAsk = (this.menuAsk || 0) + 1)
     const items = await this.roadmap()
+    // Closed again while the list was being read.
+    if (ask !== this.menuAsk || !this.pip) {
+      if (ask !== this.menuAsk && !this.menuShown) body.classList.remove("is-switcher-open")
+      return
+    }
+    this.menuShown = true
     const current = this.leaf && this.leaf.view.file
     const b = sw.title.getBoundingClientRect()
     this.pip.openMenu({
@@ -1128,8 +1150,12 @@ module.exports = class extends Plugin {
   closeMenu(now = false) {
     const body = this.ui && this.ui.switcher.el.ownerDocument.body
     if (!body || !body.classList.contains("is-switcher-open")) return
-    if (this.pip) this.pip.closeMenu(now)
-    else body.classList.remove("is-switcher-open")
+    this.menuAsk = (this.menuAsk || 0) + 1
+    const shown = this.menuShown
+    this.menuShown = false
+    // Not asked of pip-main.js yet (the list still being read): it just doesn't open.
+    if (!shown || !this.pip) body.classList.remove("is-switcher-open")
+    else this.pip.closeMenu(now)
   }
 
   async updateSwitcher(file) {
@@ -1603,11 +1629,14 @@ module.exports = class extends Plugin {
     const doc = this.leaf && this.leaf.view.containerEl.ownerDocument
     if (doc && doc !== document) {
       doc.body.style.setProperty("--muta-darkness", String(this.settings.darkness))
-      // Docked at the notch it stays dark (pip-main.js), whatever the theme says.
+      // Docked at the notch it stays dark (pip-main.js), whatever the theme
+      // says; it notes whether Obsidian is light, to go back to when it leaves.
       const body = doc.body
-      if (body.classList.contains("is-docked") && body.classList.contains("theme-light")) {
-        body.classList.replace("theme-light", "theme-dark")
-        body.dataset.mutaLight = "true"
+      if (body.classList.contains("is-docked")) {
+        if (document.body.classList.contains("theme-light")) {
+          body.classList.replace("theme-light", "theme-dark")
+          body.dataset.mutaLight = "true"
+        } else delete body.dataset.mutaLight
       }
     }
     if (this.isOpen()) {
@@ -1861,14 +1890,18 @@ module.exports = class extends Plugin {
     }
     // Past the end and back, carrying on at the page's own speed v (px/ms) so it
     // never stalls or jumps as it hits the end: a critically damped spring,
-    // x(t) = v·t·e^(−t/τ), peaking at τ (sooner for a fast flick, so it goes
-    // no further than BOUNCE_MAX), drawn as keyframes, fading as it goes out.
+    // x(t) = v·t·e^(−t/τ), always the same pace, its distance eased off
+    // towards BOUNCE_MAX so a fast flick goes no further
+    // (stiffening the spring instead made fast flicks snap back), drawn as
+    // keyframes, fading as it goes out.
     const overshoot = (v) => {
-      const tau = Math.min(BOUNCE_TAU_MS, (BOUNCE_MAX * Math.E) / Math.max(Math.abs(v), 0.001))
-      const total = tau * 7
+      const tau = BOUNCE_TAU_MS
+      const total = tau * 8
       const frames = []
       for (let t = 0; t <= total; t += 8) {
-        const x = v * t * Math.exp(-t / tau)
+        const free = v * t * Math.exp(-t / tau)
+        // A soft limit that keeps the speed it starts at (tanh's slope at 0 is 1).
+        const x = BOUNCE_MAX * Math.tanh(free / BOUNCE_MAX)
         frames.push({ transform: `translateY(${x.toFixed(2)}px)`, opacity: fade(x), offset: t / total })
       }
       frames.push({ transform: "none", opacity: 1, offset: 1 })

@@ -430,13 +430,12 @@ class Pip {
    * Makes sure a window landing at the notch got there: macOS can briefly
    * refuse to let a window above the menu bar, leaving it stopped where it
    * crossed the top of the screen. It's let up there again and put in place,
-   * a few times if need be. (lastMiss notes where it was, to look into.)
+   * a few times if need be.
    */
   ensureAt(target, tries = 3) {
     if (!this.alive() || !this.state.notched) return
     const b = this.bounds()
     if (Math.abs(b.x - target.x) <= 1 && Math.abs(b.y - target.y) <= 1) return
-    this.lastMiss = { at: { x: b.x, y: b.y }, target: { x: target.x, y: target.y }, when: Date.now() }
     this.raise()
     this.window.setBounds({ ...b, x: target.x, y: target.y })
     if (tries > 1) setTimeout(() => this.ensureAt(target, tries - 1), 60)
@@ -445,13 +444,12 @@ class Pip {
   /**
    * Docked, it stays at the notch: macOS can move a window that's partly
    * above the screen back onto it (as windows and Spaces change), leaving
-   * it off to one side. It's put straight back. (drifts notes where it was.)
+   * it off to one side. It's put straight back.
    */
   holdAtNotch() {
     const at = this.state.bounds
     const b = this.bounds()
     if (!at || (Math.abs(b.x - at.x) <= 1 && Math.abs(b.y - at.y) <= 1)) return
-    this.drifts = [...(this.drifts || []).slice(-9), { x: b.x, y: b.y, when: Date.now() }]
     this.raise()
     this.window.setBounds({ ...b, x: at.x, y: at.y })
   }
@@ -755,13 +753,23 @@ class Pip {
    */
   async openMenu(data) {
     if (!this.alive()) return
+    // Each open or close is numbered: a close while this one is still loading cancels it.
+    const ask = (this.menuAsks = (this.menuAsks || 0) + 1)
+    this.menuPending = true
     const win = this.menuWindow()
     await this.menuLoaded
-    if (!this.alive() || win.isDestroyed()) return
+    if (ask !== this.menuAsks || !this.alive() || win.isDestroyed()) return
     clearTimeout(this.menuTimer)
     clearTimeout(this.menuLeave)
     const b = this.window.getBounds()
-    const button = { x: b.x + data.button.x, y: b.y + data.button.y, width: data.button.width, height: data.button.height }
+    // The page's pixels are the screen's points times its zoom.
+    const z = this.window.webContents.getZoomFactor() || 1
+    const button = {
+      x: b.x + data.button.x * z,
+      y: b.y + data.button.y * z,
+      width: data.button.width * z,
+      height: data.button.height * z,
+    }
     const area = screen.getDisplayMatching(b).workArea
     const m = MENU.screenMargin
     const width = Math.min(MENU.width, area.width - 2 * m)
@@ -776,7 +784,8 @@ class Pip {
     win.setBounds({ x, y, width, height })
     const page = { ...data, from, width, height, radius: MENU.radius }
     await win.webContents.executeJavaScript(`mutaMenu.prepare(${JSON.stringify(page)})`).catch(() => {})
-    if (!this.menuOpen || win.isDestroyed()) return
+    if (ask !== this.menuAsks || !this.menuOpen || win.isDestroyed()) return
+    this.menuPending = false
     win.showInactive()
     this.menuPanel(true, { width, height }, from, ms, MENU.open.curve)
     win.webContents.executeJavaScript(`mutaMenu.grow(${ms}, ${JSON.stringify(MENU.open.curve)})`).catch(() => {})
@@ -785,9 +794,15 @@ class Pip {
   /** Shrinks the menu back into its button (at once with now) and puts it away. */
   closeMenu(now = false) {
     clearTimeout(this.menuLeave)
+    this.menuAsks = (this.menuAsks || 0) + 1
     const open = this.menuOpen
     const win = this.menu
-    if (!open || !win || win.isDestroyed()) return
+    if (!open || !win || win.isDestroyed()) {
+      // Still loading: it won't open now; the page lets its bottom bar go.
+      if (this.menuPending) this.renderNotch(`if (window.mutaMenuClosed) window.mutaMenuClosed(0)`)
+      this.menuPending = false
+      return
+    }
     this.menuOpen = null
     const ms = now || reduceMotion() ? 0 : MENU.close.ms
     win.setIgnoreMouseEvents(true)
@@ -874,7 +889,7 @@ class Pip {
       } catch (error) {
         // A failed step mustn't leave the clock looking alive but stopped,
         // or nothing would move again.
-        this.lastError = String((error && error.stack) || error)
+        console.error("Muta: a step of the window's movement failed", error)
         if (this.drag) this.setMoving(false)
         this.spring = null
         this.drag = null
