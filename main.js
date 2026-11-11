@@ -49,7 +49,15 @@ const SWITCH = {
 }
 /** The bottom bar's menu: its corners, and how it morphs open (out of its button) and closed (back in). */
 const MENU = {
-  radius: 11,
+  /** Its largest size, and how far in from the window's edges (and below the top bar) it keeps. */
+  width: 300,
+  height: 260,
+  inset: 6,
+  top: 44,
+  /** How far below its button it reaches. */
+  below: 6,
+  /** Concentric with the window's corners (16px), 6px in. */
+  radius: 10,
   open: { ms: 380, curve: [0.32, 0.72, 0, 1] },
   close: { ms: 240, curve: [0.4, 0, 0.2, 1] },
 }
@@ -1121,6 +1129,8 @@ module.exports = class extends Plugin {
     // The roadmap list pops out above the bar, over the page.
     const popout = doc.body.createDiv({ cls: "muta-switcher-popout" })
     const list = popout.createDiv({ cls: "muta-switcher-list" })
+    // The button's name, where the button was, while it turns into the menu.
+    const ghost = popout.createDiv({ cls: "muta-switcher-ghost" })
     const bar = el.createDiv({ cls: "muta-switcher-bar" })
     const prev = bar.createEl("button", { cls: "muta-switcher-step", attr: { "aria-label": "Previous feature", "data-tooltip-position": "top" } })
     setIcon(prev, "chevron-left")
@@ -1154,7 +1164,7 @@ module.exports = class extends Plugin {
     )
     // Going into the notch (pip-main.js), it closes at once.
     doc.defaultView.mutaCloseMenu = (now) => this.closeMenu(now)
-    return { el, popout, list, title, label, name }
+    return { el, popout, list, ghost, title, label, name }
   }
 
   /**
@@ -1175,9 +1185,48 @@ module.exports = class extends Plugin {
     const material = !!(this.pip && this.pip.hasPanel()) && !doc.defaultView.matchMedia("(prefers-reduced-transparency: reduce)").matches
     body.classList.toggle("has-menu-material", material)
     const from = this.menuBox(sw.title, 6)
-    const to = this.menuBox(sw.popout, MENU.radius)
+    const to = this.placeMenu(from)
     this.menu = { from, to, material }
     this.morphMenu(from, to, MENU.open)
+  }
+
+  /**
+   * Where the menu goes: the button grows into it where it is, so the menu
+   * sits over it, centred on it, down to just below it, as wide and tall as
+   * the window allows (over the bottom bar and the page, a few pixels in from
+   * the window's edges, its corners concentric with the window's).
+   */
+  placeMenu(button) {
+    const sw = this.ui.switcher
+    const doc = sw.el.ownerDocument
+    const body = doc.body
+    const win = body.classList.contains("is-docked")
+      ? body.getBoundingClientRect()
+      : { left: 0, top: 0, right: doc.documentElement.clientWidth, bottom: doc.documentElement.clientHeight }
+    const width = Math.min(MENU.width, win.right - win.left - 2 * MENU.inset)
+    const bottom = Math.min(button.y + button.height + MENU.below, win.bottom - MENU.inset)
+    const height = Math.min(MENU.height, bottom - win.top - MENU.top)
+    const x = Math.max(win.left + MENU.inset, Math.min(button.x + button.width / 2 - width / 2, win.right - MENU.inset - width))
+    const box = { x, y: bottom - height, width, height, r: MENU.radius }
+    // Laid out there (fixed, inside the docked window's body, which holds fixed children).
+    const origin = body.classList.contains("is-docked") ? win : { left: 0, top: 0 }
+    Object.assign(sw.popout.style, {
+      left: `${box.x - origin.left}px`,
+      top: `${box.y - origin.top}px`,
+      width: `${box.width}px`,
+      height: `${box.height}px`,
+      bottom: "auto",
+      translate: "none",
+    })
+    // The button's name, over where the button is.
+    sw.ghost.setText(sw.name.getText())
+    Object.assign(sw.ghost.style, {
+      left: `${button.x - box.x}px`,
+      top: `${button.y - box.y}px`,
+      width: `${button.width}px`,
+      height: `${button.height}px`,
+    })
+    return box
   }
 
   /** Shrinks the menu back into its button (at once with now), and takes it away. */
@@ -1232,11 +1281,21 @@ module.exports = class extends Plugin {
       easing: "ease-out",
       fill: "both",
     })
+    // The button's name fades as the list comes in, and back as it goes.
+    sw.ghost.getAnimations().forEach((x) => x.cancel())
+    sw.ghost.animate([{ opacity: opening ? 1 : 0 }, { opacity: opening ? 0 : 1 }], {
+      duration: ms * 0.4,
+      delay: opening ? 0 : ms * 0.6,
+      easing: "ease-out",
+      fill: "both",
+    })
     if (material) {
       // The hole, in the frame's tint (the page's body) and the page panel.
       const page = this.leaf && this.leaf.view.contentEl
       const holes = [[doc.body, "::before", { x: 0, y: 0, width: doc.documentElement.clientWidth, height: doc.documentElement.clientHeight }]]
       if (page) holes.push([page, null, this.menuBox(page, 0)])
+      // And the bottom bar, which the menu grows over.
+      holes.push([sw.el, null, this.menuBox(sw.el, 0)])
       for (const [el, pseudo, around] of holes) {
         const keyframes = [{ clipPath: holePath(around, a) }, { clipPath: holePath(around, b) }]
         el.getAnimations({ subtree: !!pseudo }).filter((x) => x.id === "muta-hole").forEach((x) => x.cancel())
@@ -1264,8 +1323,9 @@ module.exports = class extends Plugin {
     const doc = sw.el.ownerDocument
     sw.popout.getAnimations().forEach((x) => x.cancel())
     sw.list.getAnimations().forEach((x) => x.cancel())
+    sw.ghost.getAnimations().forEach((x) => x.cancel())
     const page = this.leaf && this.leaf.view.contentEl
-    for (const el of [doc.body, page])
+    for (const el of [doc.body, page, sw.el])
       if (el) el.getAnimations({ subtree: true }).filter((x) => x.id === "muta-hole").forEach((x) => x.cancel())
   }
 
