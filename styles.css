@@ -378,8 +378,9 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
   display: none !important;
 }
 /*
- * The buttons beside the notch: bare icons, back and forward on the left,
- * edit and More options on the right, brightening under the cursor.
+ * The buttons beside the notch: back and forward on the left, edit and More
+ * options on the right, each in a hairline border like the page panel's
+ * (no fill), brightening under the cursor.
  */
 .muta-window.is-docked .view-header {
   --icon-size: 15px;
@@ -389,13 +390,18 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
   height: 26px;
   min-width: 34px;
   justify-content: center;
+  margin-inline: 2px !important;
+  border-radius: 8px !important;
   color: rgb(255 255 255 / 0.62) !important;
   background: transparent !important;
-  box-shadow: none !important;
-  transition: color 140ms ease-out;
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.09) !important;
+  transition:
+    color 140ms ease-out,
+    box-shadow 140ms ease-out;
 }
 .muta-window.is-docked .view-header .clickable-icon:hover {
   color: #fff !important;
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.18) !important;
 }
 .muta-window.is-docked .view-header .clickable-icon:active {
   color: rgb(255 255 255 / 0.5) !important;
@@ -429,36 +435,13 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
   translate: 0 -50%;
 }
 .muta-window.is-docked .view-header .view-actions > .view-action:not(.muta-close, .muta-more) {
-  left: calc(100% - var(--muta-side) / 2 - 34px);
+  left: calc(100% - var(--muta-side) / 2 - 38px);
 }
 .muta-window.is-docked .view-header .muta-more {
   left: calc(100% - var(--muta-side) / 2);
 }
-/*
- * Growing out of the notch, they spring out of it sideways: the left pair
- * from its right, the right pair from its left.
- * Going back in, they go at once.
- */
-.muta-window.is-docked :is(.view-header-nav-buttons, .view-action:not(.muta-close)) {
-  transition:
-    transform 480ms cubic-bezier(0.34, 1.45, 0.64, 1) 60ms,
-    opacity 220ms ease-out 60ms;
-}
-.muta-window.is-docked.is-notched .view-header-nav-buttons {
-  transform: translateX(22px);
-}
-.muta-window.is-docked.is-notched .view-action:not(.muta-close) {
-  transform: translateX(-22px);
-}
-.muta-window.is-docked.is-notched :is(.view-header-nav-buttons, .view-action:not(.muta-close)) {
-  opacity: 0;
-  transition: none;
-}
-@media (prefers-reduced-motion: reduce) {
-  .muta-window.is-docked :is(.view-header-nav-buttons, .view-action:not(.muta-close)) {
-    transition: opacity 120ms ease-out;
-    transform: none !important;
-  }
+.muta-window.is-docked .view-header-nav-buttons {
+  gap: 0;
 }
 /* The top bar is the band beside the notch; the note's name would sit behind the notch. */
 .muta-window.is-docked .view-header {
