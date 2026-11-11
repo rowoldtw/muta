@@ -310,8 +310,25 @@ class Pip {
     this.dock(0)
     this.springTo(target, velocity, () => {
       this.landing = false
+      this.ensureAt(target)
       this.pollNotch()
     })
+  }
+
+  /**
+   * Makes sure a window landing at the notch got there: macOS can briefly
+   * refuse to let a window above the menu bar, leaving it stopped where it
+   * crossed the top of the screen. It's let up there again and put in place,
+   * a few times if need be. (lastMiss notes where it was, to look into.)
+   */
+  ensureAt(target, tries = 3) {
+    if (!this.alive() || !this.state.notched) return
+    const b = this.bounds()
+    if (Math.abs(b.x - target.x) <= 1 && Math.abs(b.y - target.y) <= 1) return
+    this.lastMiss = { at: { x: b.x, y: b.y }, target: { x: target.x, y: target.y }, when: Date.now() }
+    this.raise()
+    this.window.setBounds({ ...b, x: target.x, y: target.y })
+    if (tries > 1) setTimeout(() => this.ensureAt(target, tries - 1), 60)
   }
 
   /** Out on its side, at the corner nearest where its handle was slid to. */
