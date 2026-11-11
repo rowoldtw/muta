@@ -28,7 +28,7 @@ Hovering a link shows its page in a small window that floats over every app, and
 > - [x] [Hover to change pages](features/Phase%201/Hover%20to%20change%20pages.md): The page changes the moment you hover another link (with ⌘ held, by default).
 > - [x] [Page transitions](features/Phase%201/Page%20transitions.md): Pages slide up or down depending on where the link is, and sideways when stepping through the order.
 > - [x] [Properties pill](features/Phase%201/Properties%20pill.md): Properties start as a small "› Properties" pill and morph open when clicked.
-> - [x] [Overscroll](features/Phase%201/Overscroll.md): Scrolling past the top or bottom of a page rubber-bands, fading slightly as you pull, and flicks bounce off the ends.
+> - [x] [Overscroll](features/Phase%201/Overscroll.md): Pulling past the top or bottom of a page rubber-bands, fading slightly as you pull; a flick stops at the end.
 
 > [!area] Obsidian
 >
