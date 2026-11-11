@@ -3,6 +3,7 @@
   "private": true,
   "scripts": {
     "roadmap": "bun scripts/roadmap.ts",
+    "test": "bun test",
     "prepare": "git config core.hooksPath scripts/git-hooks"
   }
 }

@@ -762,22 +762,12 @@ class Pip {
     clearTimeout(this.menuTimer)
     clearTimeout(this.menuLeave)
     const b = this.window.getBounds()
-    // The page's pixels are the screen's points times its zoom.
-    const z = this.window.webContents.getZoomFactor() || 1
-    const button = {
-      x: b.x + data.button.x * z,
-      y: b.y + data.button.y * z,
-      width: data.button.width * z,
-      height: data.button.height * z,
-    }
-    const area = screen.getDisplayMatching(b).workArea
-    const m = MENU.screenMargin
-    const width = Math.min(MENU.width, area.width - 2 * m)
-    const height = Math.min(MENU.height, area.height - 2 * m)
-    const clamp = (v, lo, hi) => Math.round(Math.max(lo, Math.min(v, hi)))
-    const x = clamp(button.x + button.width / 2 - width / 2, area.x + m, area.x + area.width - m - width)
-    const y = clamp(button.y + button.height / 2 - height / 2, area.y + m, area.y + area.height - m - height)
-    const from = { x: button.x - x, y: button.y - y, width: button.width, height: button.height, r: 6 }
+    const { x, y, width, height, from } = menuBounds(
+      b,
+      data.button,
+      this.window.webContents.getZoomFactor() || 1,
+      screen.getDisplayMatching(b).workArea
+    )
     const ms = data.reduceMotion ? 0 : MENU.open.ms
     this.menuOpen = { from, dark: data.dark }
     win.setIgnoreMouseEvents(false)
@@ -1183,6 +1173,32 @@ class Pip {
 }
 
 /** One preview at a time; a new one (or a plugin reload) replaces the old. */
+/**
+ * Where the bottom bar's menu goes (screen points): centred on its button
+ * (pageButton: its box on the page, in the page's pixels, which are the
+ * screen's points times zoom), so it straddles the window's bottom edge,
+ * kept within the screen's work area. from: the button's box in the menu's
+ * own coordinates, which it grows out of.
+ */
+function menuBounds(windowBounds, pageButton, zoom, area) {
+  const button = {
+    x: windowBounds.x + pageButton.x * zoom,
+    y: windowBounds.y + pageButton.y * zoom,
+    width: pageButton.width * zoom,
+    height: pageButton.height * zoom,
+  }
+  const m = MENU.screenMargin
+  const width = Math.min(MENU.width, area.width - 2 * m)
+  const height = Math.min(MENU.height, area.height - 2 * m)
+  const clamp = (v, lo, hi) => Math.round(Math.max(lo, Math.min(v, hi)))
+  const x = clamp(button.x + button.width / 2 - width / 2, area.x + m, area.x + area.width - m - width)
+  const y = clamp(button.y + button.height / 2 - height / 2, area.y + m, area.y + area.height - m - height)
+  const from = { x: button.x - x, y: button.y - y, width: button.width, height: button.height, r: 6 }
+  return { x, y, width, height, from }
+}
+exports.menuBounds = menuBounds
+exports.MENU = MENU
+
 exports.create = (options) => {
   if (global.__muta) global.__muta.dispose()
   global.__muta = new Pip(options)

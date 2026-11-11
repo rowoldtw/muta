@@ -50,6 +50,8 @@ const SWITCH = {
 /** A flick into a page's end carries on past it and eases back: peaking after this long (ms), at most this far (px). */
 const BOUNCE_TAU_MS = 80
 const BOUNCE_MAX = 40
+/** Over its last this long (ms), a flick's bounce eases to rest. */
+const BOUNCE_SETTLE_MS = 160
 /** How much the page fades when pulled as far as it goes past its end. */
 const OVERSCROLL_FADE = 0.4
 /** How long after a bounce starts the trackpad's touch-down can still turn it into a pull (ms): it arrives late. */
@@ -221,6 +223,11 @@ class AgentWatch {
     this.records = new Map()
     // When each Antigravity edit was first seen (its records keep no time per step).
     this.seenAt = new Map()
+  }
+
+  /** The user's home folder, where the agents keep their records. */
+  homeDir() {
+    return require("os").homedir()
   }
 
   start() {
@@ -423,7 +430,7 @@ class AgentWatch {
   claude(now) {
     const path = require("path")
     const fs = require("fs")
-    const dir = path.join(require("os").homedir(), ".claude", "projects")
+    const dir = path.join(this.homeDir(), ".claude", "projects")
     const name = (p) => p.replace(/[^a-zA-Z0-9]/g, "-")
     const roots = [this.roots.real, ...this.roots.links.map(([, target]) => target)].map(name)
     let folders = []
@@ -480,7 +487,7 @@ class AgentWatch {
   /** Codex: today's and yesterday's sessions, with the files their patches add or update. */
   codex(now) {
     const path = require("path")
-    const base = path.join(require("os").homedir(), ".codex", "sessions")
+    const base = path.join(this.homeDir(), ".codex", "sessions")
     const day = (t) => {
       const d = new Date(t)
       return path.join(base, String(d.getFullYear()), String(d.getMonth() + 1).padStart(2, "0"), String(d.getDate()).padStart(2, "0"))
@@ -537,7 +544,7 @@ class AgentWatch {
   /** OpenCode: its database, through macOS's sqlite3 (OpenCode 2's tables, or the ones before them). */
   async opencode(now) {
     const path = require("path")
-    const db = path.join(require("os").homedir(), ".local", "share", "opencode", "opencode.db")
+    const db = path.join(this.homeDir(), ".local", "share", "opencode", "opencode.db")
     if (!require("fs").existsSync(db)) return []
     const query = (sql) => this.sqlite(db, sql)
     const v2 = await query("select name from sqlite_master where type = 'table' and name = 'session_v2'")
@@ -616,7 +623,7 @@ class AgentWatch {
     const fs = require("fs")
     const sessions = []
     for (const name of ["antigravity-cli", "antigravity"]) {
-      const dir = path.join(require("os").homedir(), ".gemini", name)
+      const dir = path.join(this.homeDir(), ".gemini", name)
       const db = path.join(dir, "conversation_summaries.db")
       if (!fs.existsSync(db)) continue
       const rows = await this.sqlite(
@@ -673,6 +680,28 @@ class AgentWatch {
       })
     )
   }
+}
+
+/**
+ * A flick's bounce past a page's end, starting at the page's own speed v
+ * (px/ms) so it never stalls or jumps as it hits the end: a critically
+ * damped spring, x(t) = v·t·e^(−t/τ), always the same pace, its distance
+ * eased off towards BOUNCE_MAX (tanh keeps the speed it starts at; stiffening
+ * the spring instead made fast flicks snap back). Points a frame (8ms)
+ * apart, ending back at 0.
+ */
+function bouncePath(v) {
+  const tau = BOUNCE_TAU_MS
+  const duration = tau * 9
+  const points = []
+  for (let t = 0; t <= duration; t += 8) {
+    const free = v * t * Math.exp(-t / tau)
+    // Over its last moments it eases to exactly 0, so even a hard flick doesn't pop into place at the end.
+    const settle = Math.min(1, (duration - t) / BOUNCE_SETTLE_MS)
+    points.push({ t, x: BOUNCE_MAX * Math.tanh(free / BOUNCE_MAX) * settle * settle * (3 - 2 * settle), offset: t / duration })
+  }
+  points.push({ t: duration, x: 0, offset: 1 })
+  return { points, duration }
 }
 
 /** Whether path p is folder dir or inside it. */
@@ -1888,24 +1917,12 @@ module.exports = class extends Plugin {
         easing: "cubic-bezier(0.32, 0.72, 0, 1)",
       })
     }
-    // Past the end and back, carrying on at the page's own speed v (px/ms) so it
-    // never stalls or jumps as it hits the end: a critically damped spring,
-    // x(t) = v·t·e^(−t/τ), always the same pace, its distance eased off
-    // towards BOUNCE_MAX so a fast flick goes no further
-    // (stiffening the spring instead made fast flicks snap back), drawn as
-    // keyframes, fading as it goes out.
+    // A flick's bounce off the end (bouncePath()), drawn as keyframes, fading as it goes out.
     const overshoot = (v) => {
-      const tau = BOUNCE_TAU_MS
-      const total = tau * 8
-      const frames = []
-      for (let t = 0; t <= total; t += 8) {
-        const free = v * t * Math.exp(-t / tau)
-        // A soft limit that keeps the speed it starts at (tanh's slope at 0 is 1).
-        const x = BOUNCE_MAX * Math.tanh(free / BOUNCE_MAX)
-        frames.push({ transform: `translateY(${x.toFixed(2)}px)`, opacity: fade(x), offset: t / total })
-      }
-      frames.push({ transform: "none", opacity: 1, offset: 1 })
-      bouncing = el.animate(frames, { duration: total, easing: "linear" })
+      const { points, duration } = bouncePath(v)
+      const frames = points.map(({ x, offset }) => ({ transform: `translateY(${x.toFixed(2)}px)`, opacity: fade(x), offset }))
+      frames[frames.length - 1] = { transform: "none", opacity: 1, offset: 1 }
+      bouncing = el.animate(frames, { duration, easing: "linear" })
       bouncedAt = performance.now()
     }
     this.onGesture((phase) => {
@@ -2397,3 +2414,6 @@ class MutaSettings extends PluginSettingTab {
       )
   }
 }
+
+// For the tests (test/): the parts that don't need a window.
+module.exports.testing = { AgentWatch, bouncePath, rubberBand, within, BOUNCE_MAX, AGENT_STALE_MS }

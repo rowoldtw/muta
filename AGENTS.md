@@ -24,6 +24,10 @@ An Obsidian plugin for macOS, plain JavaScript with no build step, plus two nati
 - **Public build:** other vaults (the Amarula desktop repo) run the latest GitHub release, not this checkout.
 - Settings and window position live in each plugin folder's `data.json`, so every vault linked to the repo shares the repo's one.
 
+## Tests
+
+`bun test` runs `test/`: the parts that don't need a window, outside Obsidian and Electron (`test/setup.js` stands in for their modules). Agent detection is tested against agents' records made up in a temporary home folder, the overscroll bounce's curve (`bouncePath()`), and the bottom bar menu's placement (`menuBounds()`) and opening and closing. CI runs them. Prefer a test here over checking something on the user's screen; add one with each fix to these parts, exporting what it needs through `module.exports.testing` (main.js) or `exports` (pip-main.js).
+
 ## Working style
 
 - Branches: work on `dev` (or a branch off it); `main` holds what's released. Before resetting a branch, save it as `backup-<name>`.

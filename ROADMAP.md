@@ -82,7 +82,7 @@ Working in any vault and theme, and a look of its own. Planned as 1.3.0. Lines m
 >
 > - [ ] [Any theme](features/Phase%203/Any%20theme.md): The window looks and behaves the same in any Obsidian theme, while the page itself follows the theme.
 > - *Proposed:* Find which other plugins' and themes' behaviors affect the preview, starting from an empty vault.
-> - *Proposed:* Tests that run without taking over the screen.
+> - [ ] [Tests without the screen](features/Phase%203/Tests%20without%20the%20screen.md): Tests that check the plugin without opening its window or touching the screen.
 
 > [!area] Identity
 >
