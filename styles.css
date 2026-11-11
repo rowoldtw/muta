@@ -674,8 +674,6 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
 }
 .muta-agent-glow {
   display: none;
-  /* The agent's colours, fixed round the edge; the turning arc shows them in turn. Siri's for any other. */
-  --muta-beam-colors: #ff5fa2, #ff9f5a, #ffd66b, #7b8cff, #49c6ff, #c86bff, #ff5fa2;
   /* The arc the beam lights: about half way round, brightest in its back half. */
   --muta-beam-arc: conic-gradient(
     from var(--muta-beam-angle),
@@ -695,15 +693,19 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
     rgb(255 255 255 / 0.1) 75%, transparent 78%, transparent 100%
   );
 }
-[data-muta-agent="claude"] .muta-agent-glow {
+/* The agent's colours, fixed round the edge; the turning arc shows them in turn. Siri's for any other. */
+body.muta-window {
+  --muta-beam-colors: #ff5fa2, #ff9f5a, #ffd66b, #7b8cff, #49c6ff, #c86bff, #ff5fa2;
+}
+body.muta-window[data-muta-agent="claude"] {
   /* Claude's terracotta and warm oranges. */
   --muta-beam-colors: #d97757, #f2a072, #c15f3c, #f6c9a8, #e0895f, #b5523a, #d97757;
 }
-[data-muta-agent="codex"] .muta-agent-glow {
+body.muta-window[data-muta-agent="codex"] {
   /* Blues. */
   --muta-beam-colors: #3b82f6, #7dd3fc, #2563eb, #a5b4fc, #38bdf8, #4f46e5, #3b82f6;
 }
-[data-muta-agent="opencode"] .muta-agent-glow {
+body.muta-window[data-muta-agent="opencode"] {
   /* Greens. */
   --muta-beam-colors: #10b981, #6ee7b7, #059669, #bef264, #34d399, #0d9488, #10b981;
 }
@@ -794,6 +796,79 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
   -webkit-mask-composite: xor;
   mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
   mask-composite: exclude;
+}
+/*
+ * The window's outer edge catches the beam's light, like the rim of macOS's
+ * glass: the edge lights up in the agent's colours round where the beam's
+ * head is, wider and softer than the beam, and a fringe a little ahead of it,
+ * its colours shifted, splits the light like glass does. It turns with the
+ * beam (both start with has-agent, so they keep step).
+ */
+.muta-agent-rim {
+  display: none;
+}
+.muta-window.has-agent .muta-agent-rim,
+.muta-window.agent-leaving .muta-agent-rim {
+  position: fixed;
+  inset: 0;
+  z-index: 35;
+  display: block;
+  border-radius: var(--pip-radius);
+  pointer-events: none;
+  animation:
+    muta-beam-turn 2.6s linear infinite,
+    muta-beam-in 600ms ease both;
+}
+.muta-window.agent-leaving:not(.has-agent) .muta-agent-rim {
+  animation:
+    muta-beam-turn 2.6s linear infinite,
+    muta-beam-out 500ms ease forwards;
+}
+.muta-agent-rim::before,
+.muta-agent-rim::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  padding: 1px;
+  border-radius: inherit;
+  background: conic-gradient(var(--muta-beam-colors));
+  -webkit-mask:
+    conic-gradient(
+      from calc(var(--muta-beam-angle) + var(--muta-rim-lead, 0deg)),
+      transparent 0%, transparent 34%,
+      rgb(255 255 255 / 0.15) 46%, rgb(255 255 255 / 0.5) 58%,
+      #fff 66%, rgb(255 255 255 / 0.5) 74%,
+      rgb(255 255 255 / 0.15) 84%, transparent 94%
+    ),
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: source-in, xor;
+  mask:
+    conic-gradient(
+      from calc(var(--muta-beam-angle) + var(--muta-rim-lead, 0deg)),
+      transparent 0%, transparent 34%,
+      rgb(255 255 255 / 0.15) 46%, rgb(255 255 255 / 0.5) 58%,
+      #fff 66%, rgb(255 255 255 / 0.5) 74%,
+      rgb(255 255 255 / 0.15) 84%, transparent 94%
+    ),
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  mask-composite: intersect, exclude;
+}
+.muta-agent-rim::before {
+  filter: brightness(1.5) saturate(1.3);
+  opacity: 0.6;
+}
+/* The fringe: a little ahead, its colours shifted, softened. */
+.muta-agent-rim::after {
+  --muta-rim-lead: 7deg;
+  filter: hue-rotate(28deg) brightness(1.6) saturate(1.6) blur(0.6px);
+  opacity: 0.35;
+}
+/* Docked, the window's top is the screen's edge: the rim lights only below the top bar. */
+.muta-window.is-docked .muta-agent-rim {
+  border-radius: 0 0 var(--pip-radius) var(--pip-radius);
+  -webkit-mask: linear-gradient(to bottom, transparent var(--muta-notch-height, 38px), #000 calc(var(--muta-notch-height, 38px) + 48px));
 }
 @keyframes muta-beam-turn {
   to {

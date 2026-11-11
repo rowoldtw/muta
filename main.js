@@ -1651,6 +1651,8 @@ module.exports = class extends Plugin {
     const gestures = new Set()
     this.onGesture = (handler) => gestures.add(handler)
     doc.defaultView.mutaGesture = (phase) => gestures.forEach((handler) => handler(phase))
+    // The window's outer edge, catching the agent beam's light (styles.css).
+    doc.body.createDiv({ cls: "muta-agent-rim" })
     this.attachEdges(doc)
     this.attachOverscroll(doc)
     this.attachDrag(doc)

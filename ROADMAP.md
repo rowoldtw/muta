@@ -25,7 +25,7 @@ Hovering a link shows its page in a small window that floats over every app, and
 
 > [!area] Pages
 >
-> - [x] [Hover to change pages](features/Phase%201/Hover%20to%20change%20pages.md): The page changes the moment you hover another link.
+> - [x] [Hover to change pages](features/Phase%201/Hover%20to%20change%20pages.md): The page changes the moment you hover another link (with ⌘ held, by default).
 > - [x] [Page transitions](features/Phase%201/Page%20transitions.md): Pages slide up or down depending on where the link is, and sideways when stepping through the order.
 > - [x] [Properties pill](features/Phase%201/Properties%20pill.md): Properties start as a small "› Properties" pill and morph open when clicked.
 > - [x] [Overscroll](features/Phase%201/Overscroll.md): Scrolling past the top or bottom of a page rubber-bands, and flicks bounce off the ends.
@@ -35,7 +35,7 @@ Hovering a link shows its page in a small window that floats over every app, and
 > - [x] [Order notes](features/Phase%201/Order%20notes.md): The bottom bar steps through notes in the order of the link lists in your order notes.
 > - [x] [Mark the previewed note](features/Phase%201/Mark%20the%20previewed%20note.md): Links to the previewed note turn yellow in Obsidian's other windows and in the file list.
 > - [x] [Toggle preview window](features/Phase%201/Toggle%20preview%20window.md): "Toggle preview window" in the command palette switches back to Obsidian's own popovers.
-> - [x] [Settings](features/Phase%201/Settings.md): Settings for glass, darkness, Spaces, swipes, overscroll, marking and order notes.
+> - [x] [Settings](features/Phase%201/Settings.md): Settings for the window's look, how it behaves, agents and order notes, in Obsidian's settings under Muta.
 
 > [!area] Shipping
 >
@@ -45,7 +45,7 @@ Hovering a link shows its page in a small window that floats over every app, and
 
 ## Phase 2: Feel
 
-Making the window feel native: borderless chrome, haptics, and a tuck that holds up everywhere. Planned as 0.2.0; the borderless top bar, menus at the button and settings cards shipped early, in 0.1.0. Lines marked *Proposed* come from the Notion list and don't have files yet.
+Making the window feel native: borderless chrome, haptics, and a tuck that holds up everywhere. Planned as 0.2.0; the borderless top bar, menus at the button and settings cards shipped early, in 0.1.0, and light mode, accessibility, the hover key and the handle and swipe fixes are done on `dev`. A prototype of tuck haptics and the magnet tuck (taken back out) is on the `backup-dev` branch. Lines marked *Proposed* come from the Notion list and don't have files yet.
 
 > [!area] Chrome
 >
@@ -80,7 +80,7 @@ Working in any vault and theme, and a look of its own. Planned as 1.3.0. Lines m
 
 > [!area] Any vault
 >
-> - *Proposed:* Support more themes and their options, beyond Cupertino.
+> - [ ] [Any theme](features/Phase%203/Any%20theme.md): The window looks and behaves the same in any Obsidian theme, while the page itself follows the theme.
 > - *Proposed:* Find which other plugins' and themes' behaviors affect the preview, starting from an empty vault.
 > - *Proposed:* Tests that run without taking over the screen.
 
@@ -95,4 +95,4 @@ Working in any vault and theme, and a look of its own. Planned as 1.3.0. Lines m
 > - *Proposed:* Screen magnet targets, with UI showing where the window will land.
 > - *Proposed:* "Copper by shadcn" parody.
 > - [ ] [View running agents](features/Phase%203/View%20running%20agents.md): See the coding agents you have running, and what each is doing, from the floating window.
-> - [x] [Follow AI](features/Phase%203/Follow%20AI.md): While a local agent works in the vault, the window glows, and a follow button shows each note it changes, at the change.
+> - [x] [Follow AI](features/Phase%203/Follow%20AI.md): While a local agent works in the vault, a beam in its colours rides the window's edge, and a follow button shows each change it makes.
