@@ -337,31 +337,28 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
   background: rgb(0 0 0 / 0.14) !important;
 }
 /*
- * Beside the notch, two buttons a side: back and forward on the left, edit
- * and More options on the right, where close would be (it's closed from the
- * notch by taking it out first).
+ * Beside the notch, two buttons a side, lined up with the page's edges:
+ * back and forward on the left, edit and More options on the right, where
+ * close would be (it's closed from the notch by taking it out first).
  */
 .muta-window.is-docked .view-header {
-  padding: 0 !important;
+  padding: 0 var(--pip-frame) !important;
   gap: 0 !important;
 }
 .muta-window.is-docked :is(.view-header-left, .view-actions) {
   display: contents;
 }
-/* Each pair centred in its space beside the notch. */
 .muta-window.is-docked .view-header-nav-buttons {
   order: 0;
-  flex: 0 0 calc((100% - var(--muta-notch-width, 200px)) / 2);
-  justify-content: center;
   gap: 0;
 }
 .muta-window.is-docked .view-header-title-container {
   order: 1;
-  flex: 0 0 var(--muta-notch-width, 200px);
+  flex: 1;
 }
 .muta-window.is-docked .view-actions > .view-action:not(.muta-close) {
   order: 2;
-  margin: 0 0 0 calc((100% - var(--muta-notch-width, 200px)) / 4 - 26px) !important;
+  margin: 0 !important;
 }
 .muta-window.is-docked .muta-more {
   order: 3;
