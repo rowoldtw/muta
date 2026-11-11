@@ -12,7 +12,7 @@ Working in any vault and theme, and a look of its own. Planned as 1.3.0. Lines m
 
 > [!area] Identity
 >
-> - *Proposed:* Snapped to the top middle, the window morphs into the MacBook's notch.
+> - [[Morph into the notch]]
 > - *Proposed:* Settings panel changes.
 > - *Proposed:* Updated page navigation styling.
 

@@ -13,9 +13,11 @@
  * Let go and the window coasts on with your momentum (UIKit's projection)
  * and springs to the nearest of five spots: the corners and the top
  * middle. Thrown past the left or right edge, it tucks away
- * there, leaving a handle that slides up and down its side.
+ * there, leaving a handle that slides up and down its side. Landed at the
+ * top middle of a screen with a camera notch, it morphs up into the notch,
+ * and grows back out while the cursor is on the notch or a link is hovered.
  */
-const { BrowserWindow, screen } = require("electron")
+const { BrowserWindow, screen, systemPreferences } = require("electron")
 const { spawn } = require("child_process")
 const readline = require("readline")
 const fs = require("fs")
@@ -36,6 +38,32 @@ const SPRING_RESPONSE = 0.42
 const VELOCITY_WINDOW_MS = 80
 /** A swipe starting this close to the window's top moves it. */
 const BAR = 44
+/** Docked at the notch, the window grows out for this long after a link is hovered (ms)... */
+const PEEK_MS = 2000
+/** ...and stays out this long after the cursor leaves it (ms). */
+const LEAVE_MS = 200
+/** Coming out of the notch takes this long, along this curve, and going in this long, along this one (styles.css). */
+const EXPAND_MS = 340
+const OUT_CURVE = [0.2, 0.9, 0.1, 1]
+const SHRINK_MS = 260
+const IN_CURVE = [0.5, 0, 0.7, 0.4]
+/** The glass fades in or out over this (s). */
+const GLASS_FADE_S = 0.12
+/** How often a docked window checks where the cursor is (ms). */
+const NOTCH_POLL_MS = 50
+/**
+ * Docked, the window is shaped like the notch: it starts this far above the
+ * screen (px), so macOS's own rounded window corners are out of sight...
+ */
+const LIFT = 28
+/** ...and curves out into the top of the screen with shoulders this round (px). */
+const SHOULDER = 14
+/** In the notch: its shoulders, and its bottom corners (px). */
+const NOTCH_SHOULDER = 6
+const NOTCH_RADIUS = 10
+/** Docked, the blur: like Siri's, a macOS material blurred far more than usual (px), without its grey tint or glare. */
+const DOCKED_MATERIAL = 13
+const DOCKED_BLUR = 40
 /** Frame interval for following a drag and running the spring (ms). */
 const TICK_MS = 1000 / 120
 
@@ -96,9 +124,7 @@ function spot(col, row, b) {
 
 /** The point, or the nearest point to it that's on a screen. */
 function onScreen(p) {
-  const on = (d) =>
-    p.x >= d.bounds.x && p.x < d.bounds.x + d.bounds.width &&
-    p.y >= d.bounds.y && p.y < d.bounds.y + d.bounds.height
+  const on = (d) => inside(p, d.bounds)
   if (screen.getAllDisplays().some(on)) return p
   const b = screen.getDisplayNearestPoint(p).bounds
   return {
@@ -107,8 +133,42 @@ function onScreen(p) {
   }
 }
 
+/**
+ * The notch's shape as an SVG path: a band LIFT tall across the top (above
+ * the screen), concave shoulders of radius s into sides at left and right,
+ * down to bottom, with corners of radius b.
+ */
+function hangingPath({ left, right, bottom, shoulder: s, radius: b }) {
+  const k = 0.5523
+  const n = (v) => Math.round(v * 100) / 100
+  const pts = [
+    ["M", left - s, 0],
+    ["L", right + s, 0],
+    ["L", right + s, LIFT],
+    ["C", right + s - s * k, LIFT, right, LIFT + s - s * k, right, LIFT + s],
+    ["L", right, bottom - b],
+    ["C", right, bottom - b + b * k, right - b + b * k, bottom, right - b, bottom],
+    ["L", left + b, bottom],
+    ["C", left + b - b * k, bottom, left, bottom - b + b * k, left, bottom - b],
+    ["L", left, LIFT + s],
+    ["C", left, LIFT + s - s * k, left - s + s * k, LIFT, left - s, LIFT],
+  ]
+  return pts.map(([c, ...v]) => `${c} ${v.map(n).join(" ")}`).join(" ") + " Z"
+}
+
 /** How far past a limit a rubber band lets you go (iOS's formula): less and less, never more than RUBBER_MAX. */
 const rubber = (d) => (1 - 1 / ((d * 0.55) / RUBBER_MAX + 1)) * RUBBER_MAX
+
+const reduceMotion = () => {
+  try {
+    return !!systemPreferences.getAnimationSettings().prefersReducedMotion
+  } catch {
+    return false
+  }
+}
+
+const inside = (p, b, pad = 0) =>
+  p.x >= b.x - pad && p.x < b.x + b.width + pad && p.y >= b.y - pad && p.y < b.y + b.height + pad
 
 /** Off the side of the screen but its handle. */
 function tuckedBounds(b, side) {
@@ -124,8 +184,8 @@ class Pip {
    * dir: this plugin's folder (pip-helper and glass.node).
    * glass: glass.node's options for the window's look, or null for none.
    * swipes: whether two-finger swipes on the top bar move the window.
-   * state: { bounds, tucked } where it was left.
-   * onSettle({ bounds, tucked }): where it was put, to keep.
+   * state: { bounds, tucked, notched } where it was left.
+   * onSettle({ bounds, tucked, notched }): where it was put, to keep.
    */
   constructor({ windowId, dir, glass, swipes, state, onSettle }) {
     this.window = BrowserWindow.fromId(windowId)
@@ -134,7 +194,12 @@ class Pip {
     this.setGlass(glass)
     // Clicks in it don't bring Obsidian forward over the app you're in.
     if (this.native) this.native.preventActivation(this.window.getNativeWindowHandle())
-    this.state = { bounds: state.bounds || null, tucked: state.tucked || null }
+    this.state = {
+      bounds: state.bounds || null,
+      tucked: state.tucked || null,
+      notched: !!state.notched,
+    }
+    this.notch = null
     this.onSettle = onSettle
     this.timer = null
     this.spring = null
@@ -150,6 +215,16 @@ class Pip {
         if (this.alive() && !this.drag && !this.spring && !this.swipe)
           this.window.setBounds(start)
       }, 400)
+    }
+    // Docked at the notch: shown for the hover that opened it, then into the notch.
+    if (this.state.notched) {
+      const rect = this.notchRect(this.bounds())
+      if (rect) {
+        this.state.bounds = this.dockedBounds(this.bounds(), rect)
+        this.raise()
+        this.window.setBounds(this.state.bounds)
+        this.dock(PEEK_MS)
+      } else this.state.notched = false
     }
   }
 
@@ -171,12 +246,14 @@ class Pip {
    * Where a window following a drag or swipe to (x, y) can actually be:
    * macOS stops windows at the menu bar, so it stops there, and past the
    * bottom of the screen it gives way less and less, like a rubber band.
-   * (Sideways it goes freely, to be tucked away.)
+   * (Sideways it goes freely, to be tucked away.) A window taken off the
+   * notch starts above the menu bar; it may stay up there (ceiling) until it
+   * has come below it, rather than jumping down.
    */
-  limit(x, y) {
+  limit(x, y, ceiling = Infinity) {
     const b = this.bounds()
     const a = workArea({ ...b, x, y })
-    const top = a.y
+    const top = Math.min(a.y, ceiling)
     const bottom = a.y + a.height - b.height
     if (y < top) y = top
     else if (y > bottom) y = bottom + rubber(y - bottom)
@@ -202,7 +279,7 @@ class Pip {
           a.y + a.height - b.height - MARGIN
         )
       )
-      this.state = { bounds: out, tucked: side }
+      this.state = { bounds: out, tucked: side, notched: false }
       target = tuckedBounds(out, side)
     } else {
       const spots = []
@@ -213,10 +290,25 @@ class Pip {
       const distance = (s) =>
         Math.hypot(s.x + s.width / 2 - cx, s.y + s.height / 2 - cy)
       target = spots.reduce((best, s) => (distance(s) < distance(best) ? s : best))
-      this.state = { bounds: target, tucked: null }
+      // The top middle of a screen with a notch docks it there.
+      const top = spot(0.5, 0, b)
+      const rect = target.x === top.x && target.y === top.y && this.notchRect(target)
+      if (rect) {
+        target = this.dockedBounds(target, rect)
+        this.raise()
+      }
+      this.state = { bounds: target, tucked: null, notched: !!rect }
     }
     this.settled()
-    this.springTo(target, velocity)
+    if (!this.state.notched) return this.springTo(target, velocity)
+    // It takes on the notch's look on its way up, so arriving is one motion;
+    // it only decides whether to go into the notch once it has landed.
+    this.landing = true
+    this.dock(0)
+    this.springTo(target, velocity, () => {
+      this.landing = false
+      this.pollNotch()
+    })
   }
 
   /** Out on its side, at the corner nearest where its handle was slid to. */
@@ -227,7 +319,7 @@ class Pip {
     const out = [0, 1]
       .map((row) => spot(col, row, full))
       .reduce((best, s) => (Math.abs(s.y - full.y) < Math.abs(best.y - full.y) ? s : best))
-    this.state = { bounds: out, tucked: null }
+    this.state = { bounds: out, tucked: null, notched: false }
     this.settled()
     this.springTo(this.state.bounds, { x: 0, y: 0 })
   }
@@ -238,10 +330,16 @@ class Pip {
     } catch {}
   }
 
-  /** Critically damped spring from the current spot and velocity to target. */
-  springTo(target, velocity) {
+  /** Critically damped spring from the current spot and velocity to target, then onDone. */
+  springTo(target, velocity, onDone = null) {
     const b = this.bounds()
-    this.spring = { x: b.x, y: b.y, vx: velocity.x, vy: velocity.y, target }
+    if (reduceMotion()) {
+      this.spring = null
+      this.move(target.x, target.y)
+      if (onDone) onDone()
+      return
+    }
+    this.spring = { x: b.x, y: b.y, vx: velocity.x, vy: velocity.y, target, onDone }
     this.tick()
   }
 
@@ -268,7 +366,195 @@ class Pip {
     if (done) {
       this.move(s.target.x, s.target.y)
       this.spring = null
+      if (s.onDone) s.onDone()
     } else this.move(s.x, s.y)
+  }
+
+  // ── Docked at the notch ───────────────────────────────────────────────
+  //
+  // Docked, the window hangs from the top of the screen around the notch,
+  // shaped like it, over a heavy blur instead of its glass. Going in, its
+  // shape (a CSS clip, styles.css, and the blur's mask, glass.node's shape())
+  // turns black and shrinks to just the notch, where it can't be seen;
+  // coming out, the reverse. The window itself never moves or resizes. In
+  // the notch it's see-through and lets clicks through, so the cursor is
+  // watched from here instead.
+
+  /** The notch on b's screen, or null when it has none (or glass.node can't tell). */
+  notchRect(b) {
+    if (!this.native || !this.native.notches) return null
+    const d = screen.getDisplayMatching(b).bounds
+    try {
+      return this.native.notches().find((n) => inside({ x: n.x, y: n.y }, d)) || null
+    } catch {
+      return null
+    }
+  }
+
+  /** Where a window of b's size docks: centred on the notch, from just above the top of the screen. */
+  dockedBounds(b, rect) {
+    return { ...b, x: Math.round(rect.x + rect.width / 2 - b.width / 2), y: rect.y - LIFT }
+  }
+
+  /** Up into the menu bar, over it. */
+  raise() {
+    if (this.native && this.native.allowAboveMenuBar)
+      this.native.allowAboveMenuBar(this.window.getNativeWindowHandle())
+    this.window.setAlwaysOnTop(true, "status")
+  }
+
+  /**
+   * Docks the window at the notch: out while the cursor is on it or on the
+   * notch, or for peekMs, and otherwise morphed into the notch.
+   */
+  dock(peekMs) {
+    if (!this.alive() || !this.state.notched) return
+    const rect = this.notchRect(this.state.bounds)
+    if (!rect) return this.undock()
+    if (this.notch) this.clearNotch()
+    this.raise()
+    const now = Date.now()
+    this.notch = {
+      rect,
+      open: true,
+      until: now + peekMs,
+      over: now,
+      timer: null,
+      poll: setInterval(() => this.pollNotch(), NOTCH_POLL_MS),
+    }
+    this.applyGlass()
+    // The shape out (the window's size) and in (the notch's), with the same
+    // segments so CSS can morph one into the other (styles.css).
+    // The blur (glass.node's shape()) follows the same shapes, in step.
+    const at = this.state.bounds
+    const left = rect.x - at.x
+    const shape = (l, r, bottom, s, b) => ({ left: l, right: r, bottom, shoulder: s, radius: b, lift: LIFT })
+    this.notch.out = shape(SHOULDER, at.width - SHOULDER, at.height, SHOULDER, SHOULDER + 2)
+    this.notch.into = shape(left, left + rect.width, LIFT + rect.height, NOTCH_SHOULDER, NOTCH_RADIUS)
+    this.shapeGlass(this.notch.out, 0)
+    const out = hangingPath(this.notch.out)
+    const into = hangingPath(this.notch.into)
+    this.renderNotch(`const h = document.documentElement.style
+      h.setProperty("--muta-lift", "${LIFT}px")
+      h.setProperty("--muta-shoulder", "${SHOULDER}px")
+      h.setProperty("--muta-notch-width", "${rect.width}px")
+      h.setProperty("--muta-notch-height", "${rect.height}px")
+      h.setProperty("--muta-shape-out", ${JSON.stringify(`path("${out}")`)})
+      h.setProperty("--muta-shape-in", ${JSON.stringify(`path("${into}")`)})
+      b.classList.add("is-docked")`)
+    this.pollNotch()
+  }
+
+  clearNotch() {
+    clearInterval(this.notch.poll)
+    clearTimeout(this.notch.timer)
+    this.notch = null
+  }
+
+  /** Leaves the notch: an ordinary window again. */
+  undock() {
+    this.landing = false
+    const was = this.notch
+    if (was) this.clearNotch()
+    this.state.notched = false
+    if (!was || !this.alive()) return
+    this.window.setAlwaysOnTop(true, "floating")
+    this.window.setIgnoreMouseEvents(false)
+    this.window.setHasShadow(true)
+    this.applyGlass()
+    this.renderNotch(`b.classList.remove("is-docked", "is-notched")`)
+  }
+
+  /** A link was hovered: a docked window comes out to show it. */
+  peek() {
+    if (!this.notch) return
+    this.notch.until = Date.now() + PEEK_MS
+    this.pollNotch()
+  }
+
+  pollNotch() {
+    const n = this.notch
+    if (!n || !this.alive() || this.drag || this.swipe || this.spring || this.landing) return
+    const now = Date.now()
+    const c = screen.getCursorScreenPoint()
+    // Out, the whole window counts; in, the notch and a little around it.
+    const over = n.open ? inside(c, this.bounds()) : inside(c, n.rect, 4)
+    if (over) n.over = now
+    const open = over || now < n.until || (n.open && now - n.over < LEAVE_MS)
+    if (open === n.open) return
+    n.open = open
+    clearTimeout(n.timer)
+    const still = reduceMotion()
+    if (open) {
+      // Grows out of the notch, blurred from the start: the blur grows with
+      // the shape (styles.css's timing), black turning to the Siri tint.
+      this.window.setIgnoreMouseEvents(false)
+      this.shapeGlass(n.out, still ? 0 : EXPAND_MS / 1000, OUT_CURVE)
+      this.fadeGlass(1, still ? 0 : GLASS_FADE_S)
+      this.renderNotch(`b.classList.remove("is-notched")`)
+    } else {
+      // Shrinks into the notch, the blur with it, turning black; the blur
+      // goes once it's in.
+      this.window.setIgnoreMouseEvents(true)
+      this.shapeGlass(n.into, still ? 0 : SHRINK_MS / 1000, IN_CURVE)
+      n.timer = setTimeout(() => {
+        if (this.notch === n && !n.open) this.fadeGlass(0, 0)
+      }, still ? 0 : SHRINK_MS)
+      this.renderNotch(`b.classList.add("is-notched"); b.classList.remove("is-armed", "is-near-top")`)
+    }
+  }
+
+  /** The glass to use: docked at the notch, a heavy pure blur in the notch's shape, like Siri's. */
+  glassNow() {
+    if (!this.glass) return null
+    if (!this.notch) return this.glass
+    return {
+      ...this.glass,
+      blur: true,
+      material: DOCKED_MATERIAL,
+      blurRadius: DOCKED_BLUR,
+      pure: true,
+      radius: SHOULDER + 2,
+      shoulders: SHOULDER,
+      lift: LIFT,
+    }
+  }
+
+  /** Puts the glass back, fully shown, in the look for where the window is. */
+  applyGlass() {
+    if (!this.native || !this.alive()) return
+    const handle = this.window.getNativeWindowHandle()
+    const glass = this.glassNow()
+    if (glass) this.native.apply(handle, glass)
+    else this.native.remove(handle)
+  }
+
+  /** Fades the glass to alpha over seconds (glass.node), or takes it away and puts it back. */
+  fadeGlass(alpha, seconds) {
+    if (!this.native || !this.glass) return
+    const handle = this.window.getNativeWindowHandle()
+    const full = this.glass.alpha == null ? 1 : this.glass.alpha
+    // An older glass.node, or no glass to fade: taken away and put back.
+    if (this.native.fade && this.native.fade(handle, alpha * full, seconds)) return
+    if (alpha) this.applyGlass()
+    else this.native.remove(handle)
+  }
+
+  /** Morphs the blur to a hanging shape over seconds, along curve (glass.node). */
+  shapeGlass(shape, seconds, curve = OUT_CURVE) {
+    if (!this.native || !this.native.shape || !this.alive()) return
+    const [x1, y1, x2, y2] = curve
+    try {
+      this.native.shape(this.window.getNativeWindowHandle(), { ...shape, x1, y1, x2, y2 }, seconds)
+    } catch {}
+  }
+
+  /** Runs a little script on the page's body, b (styles.css draws the rest). */
+  renderNotch(script) {
+    if (!this.alive()) return
+    this.window.webContents
+      .executeJavaScript(`(() => { const b = document.body; ${script} })()`)
+      .catch(() => {})
   }
 
   // ── The clock: follows a drag and runs the spring ─────────────────────
@@ -307,6 +593,9 @@ class Pip {
 
   dragStart() {
     if (!this.alive()) return
+    this.landing = false
+    if (this.notch && !this.notch.open) return // the notch itself doesn't drag
+    if (this.notch) this.undock()
     this.spring = null
     this.swipe = null
     const c = screen.getCursorScreenPoint()
@@ -315,6 +604,7 @@ class Pip {
     this.drag = {
       ox: c.x - b.x,
       oy: c.y - b.y,
+      ceiling: b.y,
       tracker: new Tracker(),
       tucked: this.state.tucked,
       startX: c.x,
@@ -351,7 +641,8 @@ class Pip {
     }
     const raw = { x: c.x - this.drag.ox, y: c.y - this.drag.oy }
     this.drag.tracker.add(raw.x, raw.y, now)
-    const { x, y } = this.limit(raw.x, raw.y)
+    const { x, y } = this.limit(raw.x, raw.y, this.drag.ceiling)
+    if (y >= workArea(this.bounds()).y) this.drag.ceiling = Infinity
     const b = this.bounds()
     if (Math.round(x) !== b.x || Math.round(y) !== b.y) this.move(x, y)
   }
@@ -380,10 +671,10 @@ class Pip {
 
   /** Liquid Glass behind the page (glass.node's options), or none (null). */
   setGlass(options) {
+    this.glass = options
     if (!this.native || !this.alive()) return
-    const handle = this.window.getNativeWindowHandle()
-    if (options) this.native.apply(handle, options)
-    else this.native.remove(handle)
+    if (this.notch && !this.notch.open) return // faded back in as it comes out
+    this.applyGlass()
   }
 
   /** Swipes move the window while the trackpad helper runs. */
@@ -466,11 +757,16 @@ class Pip {
       this.swipe = { tucked: this.state.tucked, y: b.y, startY: b.y, cx: x, cy: y, pull: 0 }
       return
     }
-    if (y >= b.y + BAR) return // over the page: it scrolls
+    // Docked, the bar is the band beside the notch, below the part above the screen.
+    const bar = this.notch ? LIFT + this.notch.rect.height : BAR
+    if (y >= b.y + bar) return // over the page: it scrolls
+    if (this.notch && !this.notch.open) return
+    if (this.notch) this.undock()
     this.spring = null
     this.swipe = {
       x: b.x,
       y: b.y,
+      ceiling: b.y,
       ox: x - b.x,
       oy: y - b.y,
       fingers: { x: 0, y: 0 },
@@ -506,7 +802,8 @@ class Pip {
     s.y += fy
     // The cursor rides along where the window actually is, so a window held
     // at the menu bar doesn't lose it.
-    let at = this.limit(s.x, s.y)
+    let at = this.limit(s.x, s.y, s.ceiling)
+    if (at.y >= workArea(this.bounds()).y) s.ceiling = Infinity
     // The cursor can't leave the screens, so neither can the window it's
     // riding on: where the cursor would, both stop at the edge.
     const cursor = onScreen({ x: at.x + s.ox, y: at.y + s.oy })
@@ -541,6 +838,7 @@ class Pip {
   }
 
   dispose() {
+    if (this.notch) this.clearNotch()
     this.stopClock()
     this.drag = null
     this.spring = null

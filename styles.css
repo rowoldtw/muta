@@ -236,6 +236,138 @@ html.muta-root body.muta-window .mod-root .metadata-container .metadata-content 
   left: 0;
 }
 
+/*
+ * Docked at the notch (pip-main.js), the window hangs from the top of the
+ * screen shaped like the notch: square along the screen's edge, curving out
+ * into it with concave shoulders, rounded at the bottom. The window starts
+ * --muta-lift above the screen, so the page (body) sits that far down and
+ * --muta-shoulder in from each side. Behind it, html::before draws the
+ * shape (a clip-path from pip-main.js) like Siri's: black at the notch,
+ * easing down into the blur. Going in, the shape turns black and morphs into
+ * the notch's (the same path's segments, so it interpolates), and the page
+ * fades; coming out, the reverse. Only the clip, colour and opacity animate.
+ */
+html.muta-root body.muta-window.is-docked {
+  position: fixed !important;
+  inset: var(--muta-lift, 0px) var(--muta-shoulder, 0px) 0 !important;
+  width: auto !important;
+  height: auto !important;
+  /* Its fixed children (switcher, rail) sit inside it. */
+  transform: translateZ(0);
+  background: transparent !important;
+  --pip-top: var(--muta-notch-height, 38px);
+}
+html.muta-root:has(> body.is-docked)::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-color: transparent;
+  /*
+   * Like Siri's: black at the notch, easing into a clearer smoky grey
+   * towards the bottom, over a heavy blur (pip-main.js), so what's behind
+   * shows only as soft light and shade.
+   */
+  background-image: linear-gradient(
+    to bottom,
+    rgb(0 0 0 / 0.94) 0,
+    rgb(0 0 0 / 0.9) calc(var(--muta-lift, 0px) + var(--muta-notch-height, 38px)),
+    rgb(0 0 0 / 0.7) calc(var(--muta-lift, 0px) + var(--muta-notch-height, 38px) + 60px),
+    rgb(0 0 0 / 0.42) 42%,
+    rgb(0 0 0 / 0.2) 70%,
+    rgb(0 0 0 / 0.1) 100%
+  );
+  clip-path: var(--muta-shape-out);
+  /* Coming out: quick, settling softly (pip-main.js's EXPAND_MS). */
+  transition:
+    clip-path 340ms cubic-bezier(0.2, 0.9, 0.1, 1),
+    background-color 220ms ease-out,
+    opacity 320ms ease-out;
+}
+/* Docking: the fade comes in as the window flies up to the notch. */
+@starting-style {
+  html.muta-root:has(> body.is-docked)::before {
+    opacity: 0;
+  }
+}
+html.muta-root:has(> body.is-docked.is-notched)::before {
+  background-color: #000;
+  clip-path: var(--muta-shape-in);
+  /* Going in: gathering speed into the notch. */
+  transition:
+    clip-path 260ms cubic-bezier(0.5, 0, 0.7, 0.4),
+    background-color 160ms ease-in;
+}
+:where(.muta-window.is-docked) > * {
+  transition: opacity 180ms ease-out 120ms;
+}
+.muta-window.is-docked.is-notched > * {
+  opacity: 0 !important;
+  pointer-events: none !important;
+  transition: opacity 90ms ease-in;
+}
+/* The window's width less the shoulders, where the page's width comes from the window's. */
+.muta-window.is-docked .view-content > .markdown-reading-view,
+.muta-window.is-docked .view-content > .muta-old {
+  width: calc(100vw - 2 * var(--muta-shoulder, 0px) - 2 * var(--pip-frame)) !important;
+}
+.muta-window.is-docked .muta-switcher-popout {
+  width: min(300px, calc(100vw - 2 * var(--muta-shoulder, 0px) - 24px));
+  height: min(250px, calc(100vh - var(--muta-lift, 0px) - var(--pip-top) - var(--pip-bottom) - 20px));
+}
+/* A lighter page panel, so the blur shows through. */
+.muta-window.is-docked .view-content {
+  background: rgb(0 0 0 / 0.14) !important;
+}
+/*
+ * Beside the notch, two buttons a side: back and forward on the left, edit
+ * and More options on the right, where close would be (it's closed from the
+ * notch by taking it out first).
+ */
+.muta-window.is-docked .view-header {
+  padding: 0 !important;
+  gap: 0 !important;
+}
+.muta-window.is-docked :is(.view-header-left, .view-actions) {
+  display: contents;
+}
+/* Each pair centred in its space beside the notch. */
+.muta-window.is-docked .view-header-nav-buttons {
+  order: 0;
+  flex: 0 0 calc((100% - var(--muta-notch-width, 200px)) / 2);
+  justify-content: center;
+  gap: 0;
+}
+.muta-window.is-docked .view-header-title-container {
+  order: 1;
+  flex: 0 0 var(--muta-notch-width, 200px);
+}
+.muta-window.is-docked .view-actions > .view-action:not(.muta-close) {
+  order: 2;
+  margin: 0 0 0 calc((100% - var(--muta-notch-width, 200px)) / 4 - 26px) !important;
+}
+.muta-window.is-docked .muta-more {
+  order: 3;
+  margin: 0 !important;
+}
+.muta-window.is-docked .muta-close {
+  display: none !important;
+}
+/* The top bar is the band beside the notch; the note's name would sit behind the notch. */
+.muta-window.is-docked .view-header {
+  height: var(--muta-notch-height, 38px) !important;
+}
+.muta-window.is-docked .view-header-title-container {
+  visibility: hidden;
+}
+@media (prefers-reduced-motion: reduce) {
+  html.muta-root:has(> body.is-docked)::before,
+  .muta-window.is-docked > * {
+    transition: none !important;
+  }
+}
+
 /* The page being switched away from, fading out over the new one (main.js). */
 .muta-window .markdown-preview-view.muta-old {
   position: absolute;

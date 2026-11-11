@@ -15,7 +15,10 @@
  * with your momentum and springs to the nearest of five spots (the corners
  * and the top middle). Throw it past the left or right
  * edge and it tucks away there, leaving a thin handle; drag or swipe the handle
- * to slide it along its side, and click it or pull it away to bring it back. It keeps where you put it, tucked or not. The movement runs
+ * to slide it along its side, and click it or pull it away to bring it back.
+ * Thrown to the top middle of a screen with a notch, it morphs into the notch
+ * and grows back out while you hover the notch or a link. It keeps where you
+ * put it, tucked or not. The movement runs
  * in Electron's main process (pip-main.js), with the trackpad's own swipe
  * events from a small native helper (pip-helper.swift). Build both:
  *   swiftc -O pip-helper.swift -o pip-helper
@@ -58,6 +61,8 @@ const GLASS = { tint: 0.3, alpha: 1, radius: 16 }
 const DRAG_THRESHOLD = 4
 /** A menu shown this soon (ms) after a press in the preview opens in the preview. */
 const MENU_PRESS_MS = 1000
+/** Docked at the notch, the top bar opens only after the cursor has been this far down (px). */
+const DOCKED_ARM = 110
 /**
  * The frame's edges grow into bars when the cursor comes this close to them
  * (px), and shrink back once it's this far: [opens, closes].
@@ -94,6 +99,7 @@ const DEFAULTS = {
   enabled: true,
   bounds: null,
   tucked: null,
+  notched: false,
   /**
    * Notes whose lists of links set the order the switcher steps through
    * (glob patterns, one per line, like "Roadmap/*.md"). Empty:
@@ -251,6 +257,8 @@ module.exports = class extends Plugin {
       this.closeWindow()
       await this.openWindow()
     }
+    // Docked at the notch, it grows out to show the hovered page.
+    if (this.pip) this.pip.peek()
     const { leaf } = this
     if (!leaf || (leaf.view.file && leaf.view.file.path === file.path)) return
     const old = this.snapshot()
@@ -896,11 +904,16 @@ module.exports = class extends Plugin {
       dir,
       glass: this.glassOptions(),
       swipes: this.settings.swipeToMove,
-      state: { bounds: this.settings.bounds, tucked: this.settings.tucked },
+      state: {
+        bounds: this.settings.bounds,
+        tucked: this.settings.tucked,
+        notched: this.settings.notched,
+      },
       // Where it was put: keep it, and show the handle if it's tucked.
       onSettle: (state) => {
         this.settings.bounds = state.bounds
         this.settings.tucked = state.tucked
+        this.settings.notched = state.notched
         this.showTucked()
         this.saveData(this.settings)
       },
@@ -1336,12 +1349,23 @@ module.exports = class extends Plugin {
     const edge = (cls, near, opens, openUntil) =>
       body.classList.toggle(cls, near < (body.classList.contains(cls) ? openUntil : opens))
     doc.addEventListener("mousemove", (event) => {
-      edge("is-near-top", event.clientY, EDGES.top[0], EDGES.top[1])
-      edge("is-near-bottom", win.innerHeight - event.clientY, EDGES.bottom[0], EDGES.bottom[1])
-      edge("is-near-right", win.innerWidth - event.clientX, EDGES.right[0], EDGES.right[1])
+      // Measured from the page's own edges: docked at the notch, it sits inside
+      // the window, below the part above the screen and in from the shoulders.
+      const r = body.getBoundingClientRect()
+      const top = event.clientY - r.top
+      // Docked, the top bar only opens once the cursor has been into the
+      // window, not on its way down from the notch.
+      if (body.classList.contains("is-docked")) {
+        if (top > DOCKED_ARM) body.classList.add("is-armed")
+        if (!body.classList.contains("is-armed")) body.classList.remove("is-near-top")
+        else edge("is-near-top", top, EDGES.top[0], EDGES.top[1])
+      } else edge("is-near-top", top, EDGES.top[0], EDGES.top[1])
+      edge("is-near-bottom", r.bottom - event.clientY, EDGES.bottom[0], EDGES.bottom[1])
+      edge("is-near-right", r.right - event.clientX, EDGES.right[0], EDGES.right[1])
     })
     doc.documentElement.addEventListener("mouseleave", () => {
       body.classList.remove(
+        "is-armed",
         "is-near-top",
         "is-near-bottom",
         "is-near-right",
