@@ -378,13 +378,19 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
   display: none !important;
 }
 /*
- * The buttons beside the notch: back and forward on the left, edit and More
- * options on the right, each in a hairline border like the page panel's
- * (no fill), brightening under the cursor.
+ * The buttons beside the notch: back and forward joined in one hairline
+ * border on the left, edit and More options each in their own on the right
+ * (like the page panel's, no fill), brightening under the cursor. They stay
+ * put: nothing about them animates but their colour.
  */
 .muta-window.is-docked .view-header {
   --icon-size: 15px;
   --icon-stroke: 2px;
+  transition: none !important;
+}
+.muta-window.is-docked .view-header :is(.view-header-nav-buttons, .clickable-icon) {
+  transform: none !important;
+  scale: none !important;
 }
 .muta-window.is-docked .view-header .clickable-icon {
   height: 26px;
@@ -440,8 +446,26 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
 .muta-window.is-docked .view-header .muta-more {
   left: calc(100% - var(--muta-side) / 2);
 }
+/* Back and forward: one pill, split by a hairline. */
 .muta-window.is-docked .view-header-nav-buttons {
   gap: 0;
+  border-radius: 8px;
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.09);
+  transition: box-shadow 140ms ease-out;
+}
+.muta-window.is-docked .view-header-nav-buttons:hover {
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.18);
+}
+.muta-window.is-docked .view-header .view-header-nav-buttons > .clickable-icon {
+  margin: 0 !important;
+  box-shadow: none !important;
+}
+.muta-window.is-docked .view-header .view-header-nav-buttons > .clickable-icon + .clickable-icon {
+  border-left: 1px solid rgb(255 255 255 / 0.09) !important;
+  border-radius: 0 8px 8px 0 !important;
+}
+.muta-window.is-docked .view-header .view-header-nav-buttons > .clickable-icon:first-child {
+  border-radius: 8px 0 0 8px !important;
 }
 /* The top bar is the band beside the notch; the note's name would sit behind the notch. */
 .muta-window.is-docked .view-header {
