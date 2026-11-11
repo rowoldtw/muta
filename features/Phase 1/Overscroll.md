@@ -4,7 +4,7 @@ native: false
 area: Pages
 ---
 
-Pulling past the top or bottom of a page rubber-bands, fading slightly as you pull; a flick stops at the end.
+Pulling past a page's top or bottom rubber-bands and fades it slightly; a flick carries on past the end and eases back, like macOS.
 
 > [!use] Using it
 > **Overscroll** in settings.
