@@ -29,3 +29,4 @@ Making the window feel native: borderless chrome, haptics, and a tuck that holds
 > [!area] Obsidian
 >
 > - [[One preview per vault]]
+> - [[Hold a key to preview]]

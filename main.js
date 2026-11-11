@@ -120,6 +120,8 @@ const DEFAULTS = {
   overscroll: true,
   /** Links to the previewed note turn yellow in Obsidian's other windows. */
   markPreviewed: true,
+  /** The key to hold while hovering a link to preview it ("meta", "alt", "ctrl", "shift"), or "none". */
+  hoverKey: "meta",
   /** A glow runs round the window's inner edge while a local agent works in this vault. */
   agentIndicator: true,
   /** Follow along as soon as an agent starts working, instead of with the top bar's button. */
@@ -538,13 +540,19 @@ module.exports = class extends Plugin {
       // Links inside the preview itself don't switch it on hover (clicking one
       // goes there), so reading it never jumps away under the cursor.
       if (targetEl && targetEl.ownerDocument.body.classList.contains("muta-window")) return
-      // The note you hovered from gives the switcher its order when no order notes are set.
-      if (sourcePath) plugin.sourcePath = sourcePath
-      plugin.schedule(file, plugin.direction(targetEl))
+      // Only with the hover key held, so it doesn't open by accident; pressed
+      // while still over the link, it opens then (watchHoverKey).
+      if (!plugin.hoverKeyHeld()) {
+        plugin.pendingHover = { file, targetEl, sourcePath }
+        return
+      }
+      plugin.previewLink(file, targetEl, sourcePath)
     }
     this.register(() => {
       instance.onLinkHover = original
     })
+    this.watchHoverKey(window)
+    this.registerEvent(this.app.workspace.on("window-open", (w) => this.watchHoverKey(w.win)))
 
     // Switching Obsidian between light and dark switches the window's glass too.
     this.registerEvent(this.app.workspace.on("css-change", () => this.applySettings()))
@@ -558,6 +566,43 @@ module.exports = class extends Plugin {
         await this.saveData(this.settings)
       },
     })
+  }
+
+  /** Shows a hovered link's note. */
+  previewLink(file, targetEl, sourcePath) {
+    this.pendingHover = null
+    // The note you hovered from gives the switcher its order when no order notes are set.
+    if (sourcePath) this.sourcePath = sourcePath
+    this.schedule(file, this.direction(targetEl))
+  }
+
+  /** Whether the hover key is held (from the last mouse or key event in any of Obsidian's windows). */
+  hoverKeyHeld() {
+    const key = this.settings.hoverKey
+    return key === "none" || !!(this.mods && this.mods[key])
+  }
+
+  /**
+   * Keeps track of the modifier keys in a window: mouse events carry them, so
+   * they're right as a link is hovered; pressing the hover key while still over
+   * a link previews it.
+   */
+  watchHoverKey(win) {
+    const track = (e) => {
+      this.mods = { meta: e.metaKey, alt: e.altKey, ctrl: e.ctrlKey, shift: e.shiftKey }
+    }
+    this.registerDomEvent(win, "mouseover", track, true)
+    this.registerDomEvent(win, "mousemove", track, true)
+    this.registerDomEvent(win, "keyup", track, true)
+    this.registerDomEvent(win, "blur", () => (this.mods = null))
+    this.registerDomEvent(win, "keydown", (e) => {
+      track(e)
+      const pending = this.pendingHover
+      if (!pending || !this.hoverKeyHeld()) return
+      const el = pending.targetEl
+      if (el && el.isConnected && el.matches(":hover")) this.previewLink(pending.file, el, pending.sourcePath)
+      else this.pendingHover = null
+    }, true)
   }
 
   onunload() {
@@ -583,6 +628,8 @@ module.exports = class extends Plugin {
     if (!doc || doc === document) return
     const { agent } = this
     doc.body.classList.toggle("has-agent", !!agent)
+    // Its glow takes the agent's colours (styles.css).
+    if (agent) doc.body.dataset.mutaAgent = agent.kind
     doc.body.classList.toggle("is-following", !!(agent && this.following))
     const button = this.leaf.view.mutaFollow
     if (button) {
@@ -1996,6 +2043,17 @@ class MutaSettings extends PluginSettingTab {
 
     new SettingGroup(containerEl)
       .setHeading("Behaviour")
+      .addSetting((s) =>
+        s
+          .setName("Hold a key to preview")
+          .setDesc("Hovering a link opens the window only while this key is held, so it doesn't open by accident. Pressed while over a link, it opens then.")
+          .addDropdown((d) =>
+            d
+              .addOptions({ meta: "⌘ Command", alt: "⌥ Option", ctrl: "⌃ Control", shift: "⇧ Shift", none: "None: any hover" })
+              .setValue(plugin.settings.hoverKey)
+              .onChange((v) => save("hoverKey", v))
+          )
+      )
       .addSetting((s) =>
         s
           .setName("Show on every Space")
