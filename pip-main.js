@@ -11,8 +11,8 @@
  * scrolling whatever the window has left behind.
  *
  * Let go and the window coasts on with your momentum (UIKit's projection)
- * and springs to the nearest of seven spots: the corners and the middle of
- * each side but the bottom. Thrown past the left or right edge, it tucks away
+ * and springs to the nearest of five spots: the corners and the top
+ * middle. Thrown past the left or right edge, it tucks away
  * there, leaving a handle that slides up and down its side.
  */
 const { BrowserWindow, screen } = require("electron")
@@ -94,10 +94,23 @@ function spot(col, row, b) {
   }
 }
 
-/** Off the side of the screen but its handle. */
+/** The point, or the nearest point to it that's on a screen. */
+function onScreen(p) {
+  const on = (d) =>
+    p.x >= d.bounds.x && p.x < d.bounds.x + d.bounds.width &&
+    p.y >= d.bounds.y && p.y < d.bounds.y + d.bounds.height
+  if (screen.getAllDisplays().some(on)) return p
+  const b = screen.getDisplayNearestPoint(p).bounds
+  return {
+    x: Math.min(Math.max(p.x, b.x + 1), b.x + b.width - 2),
+    y: Math.min(Math.max(p.y, b.y + 1), b.y + b.height - 2),
+  }
+}
+
 /** How far past a limit a rubber band lets you go (iOS's formula): less and less, never more than RUBBER_MAX. */
 const rubber = (d) => (1 - 1 / ((d * 0.55) / RUBBER_MAX + 1)) * RUBBER_MAX
 
+/** Off the side of the screen but its handle. */
 function tuckedBounds(b, side) {
   const a = workArea(b)
   const x =
@@ -195,8 +208,8 @@ class Pip {
       const spots = []
       for (const col of [0, 0.5, 1])
         for (const row of [0, 0.5, 1])
-          // Not the middle, and not the bottom middle.
-          if (col !== 0.5 || row === 0) spots.push(spot(col, row, b))
+          // The corners and the top middle.
+          if (row !== 0.5 && (col !== 0.5 || row === 0)) spots.push(spot(col, row, b))
       const distance = (s) =>
         Math.hypot(s.x + s.width / 2 - cx, s.y + s.height / 2 - cy)
       target = spots.reduce((best, s) => (distance(s) < distance(best) ? s : best))
@@ -206,12 +219,12 @@ class Pip {
     this.springTo(target, velocity)
   }
 
-  /** Out on its side, at the resting spot nearest where its handle was slid to. */
+  /** Out on its side, at the corner nearest where its handle was slid to. */
   untuck() {
     if (!this.alive() || !this.state.tucked) return
     const col = this.state.tucked === "right" ? 1 : 0
     const full = { ...this.bounds(), ...(this.state.bounds || {}), y: this.bounds().y }
-    const out = [0, 0.5, 1]
+    const out = [0, 1]
       .map((row) => spot(col, row, full))
       .reduce((best, s) => (Math.abs(s.y - full.y) < Math.abs(best.y - full.y) ? s : best))
     this.state = { bounds: out, tucked: null }
@@ -268,8 +281,17 @@ class Pip {
       const dt = now - last
       last = now
       if (!this.alive()) return this.stopClock()
-      if (this.drag) this.followDrag(now)
-      else if (this.spring) this.stepSpring(dt)
+      try {
+        if (this.drag) this.followDrag(now)
+        else if (this.spring) this.stepSpring(dt)
+      } catch (error) {
+        // A failed step mustn't leave the clock looking alive but stopped,
+        // or nothing would move again.
+        this.lastError = String((error && error.stack) || error)
+        if (this.drag) this.setMoving(false)
+        this.spring = null
+        this.drag = null
+      }
       if (this.drag || this.spring) this.timer = setTimeout(run, TICK_MS)
       else this.stopClock()
     }
@@ -484,9 +506,13 @@ class Pip {
     s.y += fy
     // The cursor rides along where the window actually is, so a window held
     // at the menu bar doesn't lose it.
-    const at = this.limit(s.x, s.y)
+    let at = this.limit(s.x, s.y)
+    // The cursor can't leave the screens, so neither can the window it's
+    // riding on: where the cursor would, both stop at the edge.
+    const cursor = onScreen({ x: at.x + s.ox, y: at.y + s.oy })
+    at = { x: cursor.x - s.ox, y: cursor.y - s.oy }
     this.move(at.x, at.y)
-    this.warp(at.x + s.ox, at.y + s.oy)
+    this.warp(cursor.x, cursor.y)
   }
 
   swipeEnded(ms) {

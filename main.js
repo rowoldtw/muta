@@ -12,8 +12,8 @@
  *
  * Moving it works like macOS picture in picture, from the top bar only: drag
  * it, or swipe two fingers on it, in any direction, and let go; it carries on
- * with your momentum and springs to the nearest of seven spots (the corners
- * and the middle of each side but the bottom). Throw it past the left or right
+ * with your momentum and springs to the nearest of five spots (the corners
+ * and the top middle). Throw it past the left or right
  * edge and it tucks away there, leaving a thin handle; drag or swipe the handle
  * to slide it along its side, and click it or pull it away to bring it back. It keeps where you put it, tucked or not. The movement runs
  * in Electron's main process (pip-main.js), with the trackpad's own swipe
@@ -412,7 +412,6 @@ module.exports = class extends Plugin {
     // The text slides as you step through the roadmap; the button stays put.
     const label = title.createSpan({ cls: "muta-switcher-label" })
     const name = label.createSpan({ cls: "muta-switcher-name" })
-    const where = label.createSpan({ cls: "muta-switcher-where" })
     const next = bar.createEl("button", { cls: "muta-switcher-step", attr: { "aria-label": "Next feature", "data-tooltip-position": "top" } })
     setIcon(next, "chevron-right")
     prev.addEventListener("click", () => this.step(-1))
@@ -435,7 +434,7 @@ module.exports = class extends Plugin {
       },
       true
     )
-    return { el, popout, list, title, label, name, where }
+    return { el, popout, list, title, label, name }
   }
 
   async updateSwitcher(file) {
@@ -444,7 +443,6 @@ module.exports = class extends Plugin {
     const index = items.findIndex((i) => i.file === file)
     const item = items[index]
     this.ui.switcher.name.setText(file.basename)
-    this.ui.switcher.where.setText(item ? `${index + 1}/${items.length}` : "")
     this.ui.switcher.el.toggleClass("is-orphan", !item)
     if (this.ui.switcher.el.ownerDocument.body.classList.contains("is-switcher-open"))
       this.fillSwitcher()
@@ -507,7 +505,6 @@ module.exports = class extends Plugin {
   setName(file, index, total) {
     if (!this.ui) return
     this.ui.switcher.name.setText(file.basename)
-    this.ui.switcher.where.setText(index >= 0 ? `${index + 1}/${total}` : "")
   }
 
   /**
