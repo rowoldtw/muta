@@ -72,6 +72,7 @@ Making the window feel native: borderless chrome, haptics, and a tuck that holds
 > [!area] Obsidian
 >
 > - [ ] [One preview per vault](features/Phase%202/One%20preview%20per%20vault.md): Each vault keeps its own preview, so another vault running another version doesn't take over this one.
+> - [x] [Hold a key to preview](features/Phase%202/Hold%20a%20key%20to%20preview.md): Hovering a link opens the window only while a key is held (⌘ by default), so it doesn't open by accident.
 
 ## Phase 3: Everywhere
 

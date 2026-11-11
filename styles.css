@@ -681,22 +681,29 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
   pointer-events: none;
   animation: muta-glow-in 600ms ease-out;
 }
+/* The glow's colours, by agent (main.js sets data-muta-agent); Siri's otherwise. */
+.muta-agent-glow {
+  --muta-glow-colors: #ff5fa2, #ff9f5a, #ffd66b, #7b8cff, #49c6ff, #c86bff, #ff5fa2;
+}
+[data-muta-agent="claude"] .muta-agent-glow {
+  /* Claude's terracotta and warm oranges. */
+  --muta-glow-colors: #d97757, #f2a072, #c15f3c, #f6c9a8, #e0895f, #b5523a, #d97757;
+}
+[data-muta-agent="codex"] .muta-agent-glow {
+  /* Blues. */
+  --muta-glow-colors: #3b82f6, #7dd3fc, #2563eb, #a5b4fc, #38bdf8, #4f46e5, #3b82f6;
+}
+[data-muta-agent="opencode"] .muta-agent-glow {
+  /* Greens. */
+  --muta-glow-colors: #10b981, #6ee7b7, #059669, #bef264, #34d399, #0d9488, #10b981;
+}
 .muta-agent-glow::before,
 .muta-agent-glow::after {
   content: "";
   position: absolute;
   inset: 0;
   border-radius: var(--pip-radius);
-  background: conic-gradient(
-    from var(--muta-glow-angle),
-    #ff5fa2,
-    #ff9f5a,
-    #ffd66b,
-    #7b8cff,
-    #49c6ff,
-    #c86bff,
-    #ff5fa2
-  );
+  background: conic-gradient(from var(--muta-glow-angle), var(--muta-glow-colors));
   -webkit-mask:
     linear-gradient(#000 0 0) content-box,
     linear-gradient(#000 0 0);
