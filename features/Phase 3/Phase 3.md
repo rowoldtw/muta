@@ -21,4 +21,4 @@ Working in any vault and theme, and a look of its own. Planned as 1.3.0. Lines m
 > - *Proposed:* Screen magnet targets, with UI showing where the window will land.
 > - *Proposed:* "Copper by shadcn" parody.
 > - [[View running agents]]
-> - [[Follow AI]]
+> - [[Agent beam]]

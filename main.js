@@ -131,8 +131,6 @@ const DEFAULTS = {
   hoverKey: "meta",
   /** A glow runs round the window's inner edge while a local agent works in this vault. */
   agentIndicator: true,
-  /** Follow along as soon as an agent starts working, instead of with the top bar's button. */
-  agentAutoFollow: false,
   /** Which agents to watch for. */
   agentClaude: true,
   agentCodex: true,
@@ -672,14 +670,6 @@ class AgentWatch {
   }
 }
 
-/** The line of content where text (its first non-empty line) is, or -1. */
-function lineOf(content, text) {
-  const first = text.split("\n").map((l) => l.trim()).find(Boolean)
-  if (!first) return -1
-  const at = content.indexOf(first)
-  return at < 0 ? -1 : content.slice(0, at).split("\n").length - 1
-}
-
 /** Whether path p is folder dir or inside it. */
 const within = (p, dir) => p === dir || p.startsWith(dir + "/")
 
@@ -688,9 +678,8 @@ module.exports = class extends Plugin {
     this.settings = Object.assign({}, DEFAULTS, (await this.loadData()) || (await this.fromFloatingPreview()))
     this.addSettingTab(new MutaSettings(this.app, this))
     this.patchMenus()
-    // A local agent at work in this vault: a glow, and following along (agents).
+    // Local agents at work in this vault: a beam for each (agents).
     this.agent = null
-    this.following = false
     this.agents = new AgentWatch(this, (state) => this.onAgent(state))
     if (this.settings.agentIndicator) this.agents.start()
     this.leaf = null
@@ -797,36 +786,21 @@ module.exports = class extends Plugin {
     this.closeWindow()
   }
 
-  // ── Agents: a glow while one works in the vault, and following along ──
+  // ── Agents: a beam for each one at work in the vault ────────────────
 
-  /** An agent started or stopped working in the vault, or moved to another note. */
+  /** Agents started or stopped working in the vault. */
   onAgent(state) {
-    const started = state && !this.agent
     this.agent = state
-    // Following stays on (the button shows again with the next agent) until it's pressed.
-    if (started && this.settings.agentAutoFollow) this.following = true
     this.showAgent()
-    if (this.following && state && state.edit) this.followEdit(state.edit)
   }
 
-  /** The window's glow and follow button, for the agent at work (styles.css). */
+  /** The window's beams, for the agents at work (styles.css). */
   showAgent() {
     const doc = this.leaf && this.leaf.view.containerEl.ownerDocument
     if (!doc || doc === document) return
     const { agent } = this
     doc.body.classList.toggle("has-agent", !!agent)
     this.showBeams(doc, agent ? agent.all : [])
-    doc.body.classList.toggle("is-following", !!(agent && this.following))
-    const button = this.leaf.view.mutaFollow
-    if (button) {
-      const label = agent
-        ? this.following
-          ? `Stop following ${agent.name}`
-          : `Follow ${agent.name}`
-        : "Follow along"
-      button.setAttribute("aria-label", label)
-      button.toggleClass("is-active", this.following)
-    }
   }
 
   /**
@@ -887,26 +861,6 @@ module.exports = class extends Plugin {
       }
   }
 
-  /** Follows the agent, or stops: following, the window shows the note it's changing, at the change. */
-  toggleFollow() {
-    this.following = !this.following
-    this.showAgent()
-    if (this.following && this.agent && this.agent.edit) this.followEdit(this.agent.edit, true)
-  }
-
-  /** Shows the note an edit changed, scrolled to it once the page is in. */
-  async followEdit(edit, now = false) {
-    if (!now && this.followed === `${edit.file.path}|${edit.at}`) return
-    this.followed = `${edit.file.path}|${edit.at}`
-    this.schedule(edit.file)
-    for (let i = 0; i < 20 && !(this.leaf && this.leaf.view.file === edit.file); i++)
-      await new Promise((resolve) => window.setTimeout(resolve, 50))
-    if (!this.leaf || this.leaf.view.file !== edit.file) return
-    const line = edit.text ? lineOf(await this.app.vault.read(edit.file), edit.text) : -1
-    const mode = this.leaf.view.currentMode
-    if (line >= 0 && mode && mode.applyScroll) mode.applyScroll(line)
-  }
-
   /** Shows the hovered file at once; while one is loading, only the latest hover is kept. */
   schedule(file, direction = 1, axis = "y") {
     this.next = file
@@ -952,7 +906,6 @@ module.exports = class extends Plugin {
     await leaf.openFile(file, { active: false, state: { mode: "preview" } })
     this.attach()
     this.addCloseButton()
-    this.addFollowButton()
     this.showAgent()
     const raf = leaf.view.containerEl.win || window
     if (this.updateFades) raf.setTimeout(this.updateFades, 50)
@@ -1799,14 +1752,6 @@ module.exports = class extends Plugin {
    * A close button in the top bar's right corner (the next hovered link opens
    * the window again), and the page's menu moved to its left corner.
    */
-  /** Follow along: shown while an agent works in the vault (styles.css). */
-  addFollowButton() {
-    const view = this.leaf && this.leaf.view
-    if (!view || !view.addAction || view.mutaFollow) return
-    view.mutaFollow = view.addAction("scan-eye", "Follow along", () => this.toggleFollow())
-    view.mutaFollow.addClass("muta-follow")
-  }
-
   addCloseButton() {
     const view = this.leaf && this.leaf.view
     if (!view || !view.addAction || view.mutaClose) return
@@ -2361,15 +2306,9 @@ class MutaSettings extends PluginSettingTab {
           .setName("Show when an agent is working")
           .setDesc(
             "A beam runs round the page's edge while a local agent (Claude Code, Codex, OpenCode or Antigravity) " +
-              "is working in this vault, and a follow button appears in the top bar."
+              "is working in this vault."
           )
           .addToggle((t) => t.setValue(plugin.settings.agentIndicator).onChange((v) => save("agentIndicator", v)))
-      )
-      .addSetting((s) =>
-        s
-          .setName("Follow along automatically")
-          .setDesc("Show each note an agent changes, at the change, as soon as it starts working, without pressing follow.")
-          .addToggle((t) => t.setValue(plugin.settings.agentAutoFollow).onChange((v) => save("agentAutoFollow", v)))
       )
       .addSetting((s) =>
         s

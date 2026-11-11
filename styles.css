@@ -844,16 +844,6 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
     opacity: 0;
   }
 }
-/* Follow along: only while an agent works; lit while following. */
-.muta-window .muta-follow {
-  display: none !important;
-}
-.muta-window.has-agent .muta-follow {
-  display: flex !important;
-}
-.muta-window .muta-follow.is-active {
-  color: var(--interactive-accent) !important;
-}
 /* Reduce motion: the beams hold still, and come and go without fading or sliding. */
 @media (prefers-reduced-motion: reduce) {
   .muta-agent-glow,
