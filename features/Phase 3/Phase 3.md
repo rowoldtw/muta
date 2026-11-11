@@ -22,3 +22,5 @@ Working in any vault and theme, and a look of its own. Planned as 1.3.0. Lines m
 > - *Proposed:* "Copper by shadcn" parody.
 > - [[View running agents]]
 > - [[Agent beam]]
+>   - [[Agent needs attention]]
+>   - [[See what changed]]

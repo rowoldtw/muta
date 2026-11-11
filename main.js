@@ -56,6 +56,10 @@ const BOUNCE_SETTLE_MS = 160
 const OVERSCROLL_FADE = 0.7
 /** How long after a bounce starts the trackpad's touch-down can still turn it into a pull (ms): it arrives late. */
 const TOUCH_WAIT_MS = 60
+/** See what changed: how long an agent's edit is kept to light when its note is shown (ms), how long the page takes to render it, and how long the glow lasts. */
+const CHANGE_KEEP_MS = 2 * 60 * 1000
+const CHANGE_RENDER_MS = 450
+const CHANGE_GLOW_MS = 3600
 /** How long a beam takes to go round the edge (styles.css's muta-beam-turn), and how many show at once. */
 const BEAM_TURN_MS = 2600
 const MAX_BEAMS = 4
@@ -191,8 +195,24 @@ const alive = (w) => !!(w && !w.isDestroyed())
 // in it, including notes the vault links to from elsewhere (a symlinked
 // folder, as the test vault's features/ is).
 
-/** How often the agents' records are checked (ms). */
-const AGENT_POLL_MS = 1500
+/** How often the agents' records are checked anyway (ms); changes to them are seen at once (watchers, and Claude Code's hooks). */
+const AGENT_POLL_MS = 4000
+/** Folder Muta keeps the Claude Code hook script and its events in (in the home folder). */
+const MUTA_DIR = ".muta"
+/** Marks Muta's hooks in Claude Code's settings, so they can be found and taken out again. */
+const HOOK_MARK = "muta-claude-hook"
+/** The Claude Code events Muta listens for, and the hook script that passes each on (to ~/.muta/claude-events.jsonl, one per line). */
+const HOOK_EVENTS = ["UserPromptSubmit", "PreToolUse", "PostToolUse", "Notification", "Stop", "SessionEnd"]
+const HOOK_SCRIPT = `#!/bin/sh
+# Muta: passes Claude Code's hook events on to the Muta Obsidian plugin.
+dir="$HOME/${".muta"}"
+mkdir -p "$dir"
+input=$(cat | tr -d '\\n')
+printf '{"at":%s000,"hook":%s}\\n' "$(date +%s)" "$input" >> "$dir/claude-events.jsonl"
+exit 0
+`
+/** A Claude Code session heard from through its hooks counts as stopped after this long without a word (ms): a long tool run says nothing until it ends. */
+const HOOK_STALE_MS = 30 * 60 * 1000
 /** A session's record says whether it's mid-turn; one untouched this long is taken as stopped whatever it says (ms), as after a crash. */
 const AGENT_STALE_MS = 600000
 /** Without that (a turn begun before the part of the record read), one written to this recently is working (ms). */
@@ -223,6 +243,11 @@ class AgentWatch {
     this.records = new Map()
     // When each Antigravity edit was first seen (its records keep no time per step).
     this.seenAt = new Map()
+    // Claude Code sessions, as its hooks report them (claudeHookEvent()).
+    this.hookSessions = new Map()
+    // Edits already reported to onEdit.
+    this.editsSeen = new Map()
+    this.watchers = []
   }
 
   /** The user's home folder, where the agents keep their records. */
@@ -233,17 +258,142 @@ class AgentWatch {
   start() {
     if (this.timer) return
     this.timer = window.setInterval(() => this.poll(), AGENT_POLL_MS)
+    this.watch()
     this.poll()
   }
 
   stop() {
     window.clearInterval(this.timer)
     this.timer = null
+    for (const w of this.watchers) w.close()
+    this.watchers = []
     this.set(null)
   }
 
+  /**
+   * Checks again the moment any agent's records change: Claude Code's hook
+   * events (~/.muta), Codex's sessions, OpenCode's and Antigravity's
+   * databases. The timer stays, in case a watch misses something.
+   */
+  watch() {
+    const fs = require("fs")
+    const path = require("path")
+    const home = this.homeDir()
+    fs.mkdirSync(path.join(home, MUTA_DIR), { recursive: true })
+    const soon = () => {
+      window.clearTimeout(this.soon)
+      this.soon = window.setTimeout(() => this.poll(), 60)
+    }
+    for (const [dir, recursive] of [
+      [path.join(home, MUTA_DIR), false],
+      [path.join(home, ".claude", "projects"), true],
+      [path.join(home, ".codex", "sessions"), true],
+      [path.join(home, ".local", "share", "opencode"), false],
+      [path.join(home, ".gemini", "antigravity-cli"), false],
+    ])
+      try {
+        this.watchers.push(fs.watch(dir, { recursive, persistent: false }, soon))
+      } catch {} // not installed
+  }
+
+  // ── Claude Code's hooks ──────────────────────────────────────────────
+
+  claudeSettingsPath() {
+    return require("path").join(this.homeDir(), ".claude", "settings.json")
+  }
+
+  /** Whether Muta's hooks are in Claude Code's settings (checked every few seconds at most). */
+  hooksInstalled(now = Date.now()) {
+    if (this.hooksChecked && now - this.hooksChecked.at < 5000) return this.hooksChecked.on
+    let on = false
+    try {
+      on = require("fs").readFileSync(this.claudeSettingsPath(), "utf8").includes(HOOK_MARK)
+    } catch {}
+    this.hooksChecked = { at: now, on }
+    return on
+  }
+
+  /** Puts Muta's hooks into Claude Code's settings (and its script into ~/.muta), or takes them out. */
+  setHooks(on) {
+    const fs = require("fs")
+    const path = require("path")
+    const script = path.join(this.homeDir(), MUTA_DIR, "claude-hook.sh")
+    if (on) {
+      fs.mkdirSync(path.dirname(script), { recursive: true })
+      fs.writeFileSync(script, HOOK_SCRIPT, { mode: 0o755 })
+    }
+    const file = this.claudeSettingsPath()
+    let settings = {}
+    try {
+      settings = JSON.parse(fs.readFileSync(file, "utf8"))
+    } catch (error) {
+      if (fs.existsSync(file)) throw new Error("Claude Code's settings.json couldn't be read, so it was left as it is")
+    }
+    const next = withHooks(settings, on ? `sh "${script}" # ${HOOK_MARK}` : null)
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, JSON.stringify(next, null, 2) + "\n")
+    this.hooksChecked = null
+  }
+
+  /** Reads the hook events written since last time (taking the file away first, so none are read twice or lost). */
+  readHookEvents() {
+    const fs = require("fs")
+    const path = require("path")
+    const file = path.join(this.homeDir(), MUTA_DIR, "claude-events.jsonl")
+    const taken = file + ".reading"
+    try {
+      fs.renameSync(file, taken)
+    } catch {
+      return
+    }
+    let text = ""
+    try {
+      text = fs.readFileSync(taken, "utf8")
+    } finally {
+      fs.rmSync(taken, { force: true })
+    }
+    for (const line of text.split("\n")) {
+      let e
+      try {
+        e = JSON.parse(line)
+      } catch {
+        continue
+      }
+      const id = e.hook && e.hook.session_id
+      if (!id) continue
+      this.hookSessions.set(id, claudeHookEvent(this.hookSessions.get(id), e.hook, e.at || Date.now()))
+    }
+  }
+
+  /**
+   * Claude Code's sessions: from its hooks when they're in, and from its
+   * session files for any the hooks haven't heard from (sessions started
+   * before the hooks were added don't run them).
+   */
+  claudeSessions(now) {
+    if (!this.hooksInstalled(now)) return this.claude(now)
+    const hooked = this.claudeFromHooks(now)
+    const known = new Set(this.hookSessions.keys())
+    const path = require("path")
+    return [...hooked, ...this.claude(now).filter((x) => !known.has(path.basename(x.id, ".jsonl")))]
+  }
+
+  /** Claude Code's sessions from its hooks: those not over and heard from lately. */
+  claudeFromHooks(now) {
+    this.readHookEvents()
+    const out = []
+    for (const [id, session] of this.hookSessions) {
+      if (session.ended || now - session.at > HOOK_STALE_MS) {
+        if (now - session.at > AGENT_EDIT_MS) this.hookSessions.delete(id)
+        continue
+      }
+      out.push(session)
+    }
+    return out
+  }
+
   set(state) {
-    const key = state ? state.all.map((a) => a.id).join(",") : ""
+    const key = state ? state.all.map((a) => `${a.id}${a.attention ? "!" + a.attention.message : ""}`).join(",") : ""
     if (key === this.key) return
     this.key = key
     this.state = state
@@ -258,7 +408,7 @@ class AgentWatch {
       if (!this.roots || now - this.roots.at > 30000) this.roots = this.vaultRoots()
       const s = this.plugin.settings
       const sessions = [
-        ...(s.agentClaude ? this.claude(now) : []),
+        ...(s.agentClaude ? this.claudeSessions(now) : []),
         ...(s.agentCodex ? this.codex(now) : []),
         ...(s.agentOpencode ? await this.opencode(now) : []),
         ...(s.agentAntigravity ? await this.antigravity(now) : []),
@@ -268,6 +418,7 @@ class AgentWatch {
       let best = null
       const all = []
       for (const session of sessions) {
+        this.reportEdits(session, now)
         if (!session.working) continue
         const edits = session.edits
           .filter((e) => now - e.at < AGENT_EDIT_MS)
@@ -276,7 +427,7 @@ class AgentWatch {
           .sort((a, b) => b.at - a.at)
         if (!edits.length && !this.inVault(session.cwd)) continue
         const found = { kind: session.kind, name: AGENT_NAMES[session.kind], at: session.at, edit: edits[0] || null }
-        all.push({ id: `${session.kind}:${session.id}`, kind: session.kind })
+        all.push({ id: `${session.kind}:${session.id}`, kind: session.kind, attention: session.attention || null })
         const when = (x) => (x.edit ? x.edit.at : x.at)
         if (!best || when(found) > when(best)) best = found
       }
@@ -292,6 +443,19 @@ class AgentWatch {
     } finally {
       this.busy = false
     }
+  }
+
+  /** Tells onEdit of each new edit to a note in the vault (for "see what changed"), once. */
+  reportEdits(session, now) {
+    for (const e of session.edits) {
+      if (now - e.at > AGENT_EDIT_MS) continue
+      const key = `${session.kind}|${e.path}|${e.at}|${(e.text || "").length}`
+      if (this.editsSeen.has(key)) continue
+      this.editsSeen.set(key, now)
+      const file = this.toVault(e.path)
+      if (file && this.onEdit) this.onEdit({ kind: session.kind, file, text: e.text || "", at: e.at })
+    }
+    for (const [key, at] of this.editsSeen) if (now - at > AGENT_EDIT_MS) this.editsSeen.delete(key)
   }
 
   /** The vault's folder, and the folders and files it links to from elsewhere (two levels deep). */
@@ -516,8 +680,8 @@ class AgentWatch {
         const re = /\*\*\* (?:Update|Add) File: ([^\n]+)\n([\s\S]*?)(?=\n\*\*\* |$)/g
         let m
         while ((m = re.exec(patch))) {
-          const added = m[2].split("\n").find((l) => l.startsWith("+") && l.slice(1).trim())
-          session.edits.push({ path: m[1].trim(), text: added ? added.slice(1) : "", at: Date.parse(d.timestamp) || at })
+          const added = m[2].split("\n").filter((l) => l.startsWith("+") && !l.startsWith("+++")).map((l) => l.slice(1))
+          session.edits.push({ path: m[1].trim(), text: added.join("\n"), at: Date.parse(d.timestamp) || at })
         }
       })
       if (session.working === null) session.working = now - at < AGENT_ACTIVE_MS
@@ -683,6 +847,92 @@ class AgentWatch {
 }
 
 /**
+ * A Claude Code session after hook event hook (at: when, ms), from session
+ * (or none yet). A prompt or a tool starts or continues a turn; Stop ends it;
+ * SessionEnd ends the session. A notification asking for permission (or
+ * any other input mid-turn) needs the user's attention until the next tool
+ * or prompt. Edits (Edit, MultiEdit, Write) say which files, and what's new.
+ */
+function claudeHookEvent(session, hook, at) {
+  const s = session
+    ? { ...session, edits: [...session.edits] }
+    : { id: hook.session_id, kind: "claude", cwd: null, working: false, attention: null, ended: false, edits: [], at }
+  s.at = at
+  if (hook.cwd) s.cwd = hook.cwd
+  const event = hook.hook_event_name
+  if (event === "UserPromptSubmit" || event === "PreToolUse" || event === "PostToolUse") {
+    s.working = true
+    s.ended = false
+    s.attention = null
+  } else if (event === "Stop") {
+    s.working = false
+    s.attention = null
+  } else if (event === "SessionEnd") {
+    s.working = false
+    s.attention = null
+    s.ended = true
+  } else if (event === "Notification") {
+    const type = hook.notification_type || ""
+    const message = String(hook.message || "")
+    // Its idle reminder (after a turn has ended) isn't a question.
+    const asking = type ? type !== "idle_prompt" && type !== "auth_success" : !/waiting for your input/i.test(message)
+    if (asking && s.working) s.attention = { message: message || "Needs your input" }
+  }
+  if (event === "PreToolUse" && /^(Edit|MultiEdit|Write)$/.test(hook.tool_name || "")) {
+    const input = hook.tool_input || {}
+    const text = input.new_string || (input.edits || []).map((e) => e.new_string || "").join("\n") || input.content || ""
+    if (input.file_path) s.edits.push({ path: input.file_path, text, at })
+    if (s.edits.length > AGENT_EDITS) s.edits.splice(0, s.edits.length - AGENT_EDITS)
+  }
+  return s
+}
+
+/**
+ * Claude Code's settings with Muta's hooks in (running command) or taken out
+ * (command null), leaving every other hook as it is.
+ */
+function withHooks(settings, command) {
+  const next = { ...settings, hooks: { ...(settings.hooks || {}) } }
+  const ours = (group) => (group.hooks || []).some((h) => String(h.command || "").includes(HOOK_MARK))
+  for (const event of HOOK_EVENTS) {
+    const groups = (next.hooks[event] || []).filter((g) => !ours(g))
+    if (command) {
+      const group = { hooks: [{ type: "command", command, timeout: 5 }] }
+      if (event === "PreToolUse" || event === "PostToolUse") group.matcher = "*"
+      groups.push(group)
+    }
+    if (groups.length) next.hooks[event] = groups
+    else delete next.hooks[event]
+  }
+  if (!Object.keys(next.hooks).length) delete next.hooks
+  return next
+}
+
+/**
+ * The lines of an edit's new text as they'd read on the rendered page:
+ * Markdown's marks taken off (headings, lists, quotes, emphasis, links,
+ * code), blank and very short lines left out.
+ */
+function changedLines(text) {
+  return String(text || "")
+    .split("\n")
+    .map((line) =>
+      line
+        .replace(/^\s*>+\s?/, "")
+        .replace(/^\s*(#{1,6}\s+|[-*+]\s+(\[.\]\s+)?|\d+[.)]\s+)/, "")
+        .replace(/\[\[([^\]|]+)\|([^\]]+)\]\]/g, "$2")
+        .replace(/\[\[([^\]]+)\]\]/g, "$1")
+        .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+        .replace(/(\*\*|__|==|~~|`)/g, "")
+        .replace(/(^|\W)[*_](\S.*?\S|\S)[*_](?=\W|$)/g, "$1$2")
+        .replace(/^\[!\w+\][+-]?\s*/, "")
+        .replace(/\s+/g, " ")
+        .trim()
+    )
+    .filter((line) => line.length >= 4 && !/^[-|:\s]+$/.test(line))
+}
+
+/**
  * A flick's bounce past a page's end, starting at the page's own speed v
  * (px/ms) so it never stalls or jumps as it hits the end: a critically
  * damped spring, x(t) = v·t·e^(−t/τ), always the same pace, its distance
@@ -715,7 +965,15 @@ module.exports = class extends Plugin {
     // Local agents at work in this vault: a beam for each (agents).
     this.agent = null
     this.agents = new AgentWatch(this, (state) => this.onAgent(state))
+    this.agents.onEdit = (edit) => this.onAgentEdit(edit)
+    this.recentEdits = []
     if (this.settings.agentIndicator) this.agents.start()
+    // An agent's edit to the note on show: it re-renders, then the change is lit.
+    this.registerEvent(
+      this.app.vault.on("modify", (file) => {
+        if (this.leaf && this.leaf.view.file === file) window.setTimeout(() => this.lightChanges(file), CHANGE_RENDER_MS)
+      })
+    )
     this.leaf = null
     this.win = null
     this.next = null
@@ -845,6 +1103,66 @@ module.exports = class extends Plugin {
     const { agent } = this
     doc.body.classList.toggle("has-agent", !!agent)
     this.showBeams(doc, agent ? agent.all : [])
+    this.showAsk(doc, agent ? agent.all.find((a) => a.attention) : null)
+  }
+
+  /**
+   * An agent stopped to ask something (a permission, a question): a pill at
+   * the top of the page, in its colour, says which and what. It goes when
+   * the agent carries on.
+   */
+  showAsk(doc, asking) {
+    let pill = doc.body.querySelector(":scope > .muta-agent-ask")
+    if (!asking) {
+      if (pill) pill.removeClass("is-shown")
+      return
+    }
+    if (!pill) {
+      pill = doc.body.createDiv({ cls: "muta-agent-ask" })
+      pill.createSpan({ cls: "muta-agent-ask-dot" })
+      pill.createSpan({ cls: "muta-agent-ask-text" })
+    }
+    pill.dataset.agent = asking.kind
+    pill.querySelector(".muta-agent-ask-text").setText(`${AGENT_NAMES[asking.kind]} needs you · ${asking.attention.message}`)
+    pill.setAttribute("aria-live", "polite")
+    // Shown on the next frame, so it fades in.
+    doc.defaultView.requestAnimationFrame(() => pill.addClass("is-shown"))
+  }
+
+  /** An agent changed a note in the vault: kept a while, and lit at once if it's the note on show. */
+  onAgentEdit(edit) {
+    const now = Date.now()
+    this.recentEdits = [...this.recentEdits.filter((e) => now - e.seen < CHANGE_KEEP_MS), { ...edit, seen: now }]
+    if (this.leaf && this.leaf.view.file === edit.file) window.setTimeout(() => this.lightChanges(edit.file), CHANGE_RENDER_MS)
+  }
+
+  /**
+   * See what changed: the lines agents changed on the page on show, lately,
+   * glow for a moment in the agent's colour (styles.css). Each change lights
+   * once.
+   */
+  lightChanges(file) {
+    const page = this.page()
+    if (!page || !this.leaf || this.leaf.view.file !== file) return
+    const now = Date.now()
+    const edits = this.recentEdits.filter((e) => e.file === file && now - e.seen < CHANGE_KEEP_MS && !e.lit)
+    if (!edits.length) return
+    const blocks = [...page.querySelectorAll(".markdown-preview-sizer :is(p, li, h1, h2, h3, h4, h5, h6, td, th, .callout-title-inner, pre)")]
+    const textOf = new Map(blocks.map((el) => [el, el.textContent.replace(/\s+/g, " ").trim()]))
+    for (const edit of edits) {
+      edit.lit = true
+      for (const line of changedLines(edit.text)) {
+        // The innermost block that holds the line (a list item's own text, not its whole list).
+        const holders = blocks.filter((el) => textOf.get(el).includes(line) || (line.includes(textOf.get(el)) && textOf.get(el).length >= 12))
+        const el = holders.find((h) => !holders.some((o) => o !== h && h.contains(o))) || holders[0]
+        if (!el) continue
+        el.dataset.mutaChanged = edit.kind
+        el.classList.remove("muta-changed")
+        void el.offsetWidth // restart the glow if it's lit again
+        el.classList.add("muta-changed")
+        window.setTimeout(() => el.classList.remove("muta-changed"), CHANGE_GLOW_MS)
+      }
+    }
   }
 
   /**
@@ -887,9 +1205,11 @@ module.exports = class extends Plugin {
       }
     }
     // Spread round the edge: each its share of the turn, new ones starting where the last left off.
+    // One that's waiting for the user holds still and pulses.
     shown.forEach((a, i) => {
       const beam = beams.get(a.id)
       for (const el of [beam.glow, beam.rim]) {
+        el.toggleClass("is-waiting", !!a.attention)
         el.style.setProperty("--muta-beam-offset", `${(360 / shown.length) * i}deg`)
         el.style.setProperty("--muta-beam-span", `${360 / shown.length}deg`)
       }
@@ -957,6 +1277,8 @@ module.exports = class extends Plugin {
     this.collapseProperties()
     this.crossfade(old, direction, axis)
     this.markCurrent(file)
+    // Changed by an agent lately: lit once the page is in.
+    window.setTimeout(() => this.lightChanges(file), CHANGE_RENDER_MS)
     this.updateSwitcher(file)
     // The page renders over a few frames; place the rail's marks once it has.
     for (const ms of [30, 60, 150, 400])
@@ -2379,6 +2701,26 @@ class MutaSettings extends PluginSettingTab {
       )
       .addSetting((s) =>
         s
+          .setName("Claude Code hooks")
+          .setDesc(
+            "Adds hooks to Claude Code's settings (~/.claude/settings.json) that tell Muta the moment a session " +
+              "starts, edits a note, stops, or needs you (a permission or a question), instead of Muta reading its " +
+              "session files every few seconds. The events go to ~/.muta and are deleted once read."
+          )
+          .addToggle((t) =>
+            t.setValue(plugin.agents.hooksInstalled()).onChange((v) => {
+              try {
+                plugin.agents.setHooks(v)
+                new Notice(v ? "Muta: Claude Code hooks added. New Claude Code sessions use them." : "Muta: Claude Code hooks taken out.")
+              } catch (error) {
+                new Notice(`Muta: ${error.message}`)
+                t.setValue(!v)
+              }
+            })
+          )
+      )
+      .addSetting((s) =>
+        s
           .setName("Codex")
           .setDesc("Watch Codex's sessions (~/.codex/sessions).")
           .addToggle((t) => t.setValue(plugin.settings.agentCodex).onChange((v) => save("agentCodex", v)))
@@ -2420,4 +2762,4 @@ class MutaSettings extends PluginSettingTab {
 }
 
 // For the tests (test/): the parts that don't need a window.
-module.exports.testing = { AgentWatch, bouncePath, rubberBand, within, BOUNCE_MAX, AGENT_STALE_MS }
+module.exports.testing = { AgentWatch, bouncePath, rubberBand, within, BOUNCE_MAX, AGENT_STALE_MS, claudeHookEvent, withHooks, changedLines, HOOK_MARK }
