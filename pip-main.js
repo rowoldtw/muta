@@ -730,6 +730,8 @@ class Pip {
       focusable: false,
       skipTaskbar: true,
       acceptFirstMouse: true,
+      // Not macOS's own rounded window corners, which clipped the menu's border at its corners.
+      roundedCorners: false,
       backgroundColor: "#00000000",
       webPreferences: { nodeIntegration: true, contextIsolation: false, backgroundThrottling: false },
     })
