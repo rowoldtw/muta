@@ -19,8 +19,8 @@ Hovering a link shows its page in a small window that floats over every app, and
 
 > [!area] Moving it
 >
-> - [x] [Snap to spots](features/Phase%201/Snap%20to%20spots.md): Throw the window and it springs to the nearest of eight spots: the corners and the middle of each side.
-> - [x] [Tuck to the side](features/Phase%201/Tuck%20to%20the%20side.md): Throw the window past the left or right edge to tuck it behind a thin handle; click, drag or swipe the handle to bring it back.
+> - [x] [Snap to spots](features/Phase%201/Snap%20to%20spots.md): Throw the window and it springs to the nearest of five spots: the corners and the top middle.
+> - [x] [Tuck to the side](features/Phase%201/Tuck%20to%20the%20side.md): Throw the window past the left or right edge to tuck it behind a thin handle; click the handle or pull it away to bring it back.
 > - [x] [Screen limits](features/Phase%201/Screen%20limits.md): The window stops at the menu bar, rubber-bands past the bottom of the screen, and remembers where you left it.
 
 > [!area] Pages
@@ -45,7 +45,7 @@ Hovering a link shows its page in a small window that floats over every app, and
 
 ## Phase 2: Feel
 
-Making the window feel native: borderless chrome, haptics, and a tuck that holds up everywhere. Planned as 0.2.0; the borderless top bar, menus at the button and settings cards shipped early, in 0.1.0. Prototypes of most of these are on the `backup-dev` and `backup-local-main` branches; bring them over one at a time. Lines marked *Proposed* come from the Notion list and don't have files yet.
+Making the window feel native: borderless chrome, haptics, and a tuck that holds up everywhere. Planned as 0.2.0; the borderless top bar, menus at the button and settings cards shipped early, in 0.1.0. Lines marked *Proposed* come from the Notion list and don't have files yet.
 
 > [!area] Chrome
 >
@@ -58,13 +58,13 @@ Making the window feel native: borderless chrome, haptics, and a tuck that holds
 >
 > - [ ] [Tuck haptics](features/Phase%202/Tuck%20haptics.md): A tap on the trackpad as a tucking window lands at the side.
 > - [ ] [Magnet tuck](features/Phase%202/Magnet%20tuck.md): Pushed a quarter of the way past a side while held, a magnet pulls the window into its tucked place.
-> - [ ] [Handle slides along its side](features/Phase%202/Handle%20slides%20along%20its%20side.md): Drag or swipe a tucked handle up and down its side; pull it 40px away to bring the window out.
+> - [x] [Handle slides along its side](features/Phase%202/Handle%20slides%20along%20its%20side.md): Drag or swipe a tucked handle up and down its side; pull it 40px away to bring the window out.
 > - [ ] [Tucked window stays put across Spaces](features/Phase%202/Tucked%20window%20stays%20put%20across%20Spaces.md): A tucked window rests as just its handle, fully on screen, so switching Spaces no longer pulls it partway back.
 
 > [!area] Moving it
 >
 > - [ ] [Pinch to resize](features/Phase%202/Pinch%20to%20resize.md): Pinch on the window to resize it like macOS picture in picture, keeping its shape and docked corner.
-> - [ ] [Swipes stop at the screen edge](features/Phase%202/Swipes%20stop%20at%20the%20screen%20edge.md): Swiping the window to a screen's edge stops it there instead of losing it.
+> - [x] [Swipes stop at the screen edge](features/Phase%202/Swipes%20stop%20at%20the%20screen%20edge.md): Swiping the window to a screen's edge stops it there instead of losing it.
 > - *Proposed:* The window stays in the same place while it opens and closes.
 
 > [!area] Obsidian
@@ -91,3 +91,4 @@ Working in any vault and theme, and a look of its own. Planned as 1.3.0. Lines m
 >
 > - *Proposed:* Screen magnet targets, with UI showing where the window will land.
 > - *Proposed:* "Copper by shadcn" parody.
+> - [ ] [View running agents](features/Phase%203/View%20running%20agents.md): See the coding agents you have running, and what each is doing, from the floating window.
