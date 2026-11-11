@@ -27,6 +27,8 @@ const path = require("path")
 const MARGIN = 12
 /** Pulling a tucked handle this far (px) away from its side brings the window back out. */
 const PULL_OUT = 40
+/** Taken off the notch, how far sideways (px) it can go before it's back below the menu bar. */
+const CEILING_FALLOFF = 120
 /** The most a window can be pulled past the bottom of the screen (px). */
 const RUBBER_MAX = 120
 const TUCK_VISIBLE = 12
@@ -253,13 +255,19 @@ class Pip {
    * macOS stops windows at the menu bar, so it stops there, and past the
    * bottom of the screen it gives way less and less, like a rubber band.
    * (Sideways it goes freely, to be tucked away.) A window taken off the
-   * notch starts above the menu bar; it may stay up there (ceiling) until it
-   * has come below it, rather than jumping down.
+   * notch (held.ceiling, from held.ceilingX) starts above the menu bar
+   * rather than jumping down; that allowance eases away as it moves
+   * sideways from the notch (CEILING_FALLOFF), so it's never left over the
+   * menu bar anywhere else along the top.
    */
-  limit(x, y, ceiling = Infinity) {
+  limit(x, y, held = null) {
     const b = this.bounds()
     const a = workArea({ ...b, x, y })
-    const top = Math.min(a.y, ceiling)
+    let top = a.y
+    if (held && held.ceiling < a.y) {
+      const away = Math.min(Math.abs(x - held.ceilingX) / CEILING_FALLOFF, 1)
+      top = held.ceiling + (a.y - held.ceiling) * away
+    }
     const bottom = a.y + a.height - b.height
     if (y < top) y = top
     else if (y > bottom) y = bottom + rubber(y - bottom)
@@ -641,6 +649,7 @@ class Pip {
       ox: c.x - b.x,
       oy: c.y - b.y,
       ceiling: b.y,
+      ceilingX: b.x,
       tracker: new Tracker(),
       tucked: this.state.tucked,
       startX: c.x,
@@ -677,7 +686,7 @@ class Pip {
     }
     const raw = { x: c.x - this.drag.ox, y: c.y - this.drag.oy }
     this.drag.tracker.add(raw.x, raw.y, now)
-    const { x, y } = this.limit(raw.x, raw.y, this.drag.ceiling)
+    const { x, y } = this.limit(raw.x, raw.y, this.drag)
     if (y >= workArea(this.bounds()).y) this.drag.ceiling = Infinity
     const b = this.bounds()
     if (Math.round(x) !== b.x || Math.round(y) !== b.y) this.move(x, y)
@@ -802,6 +811,7 @@ class Pip {
       x: b.x,
       y: b.y,
       ceiling: b.y,
+      ceilingX: b.x,
       ox: x - b.x,
       oy: y - b.y,
       fingers: { x: 0, y: 0 },
@@ -839,7 +849,7 @@ class Pip {
     s.y += fy
     // The cursor rides along where the window actually is, so a window held
     // at the menu bar doesn't lose it.
-    let at = this.limit(s.x, s.y, s.ceiling)
+    let at = this.limit(s.x, s.y, s)
     if (at.y >= workArea(this.bounds()).y) s.ceiling = Infinity
     // The cursor can't leave the screens, so neither can the window it's
     // riding on: where the cursor would, both stop at the edge.

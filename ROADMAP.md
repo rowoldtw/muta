@@ -94,3 +94,4 @@ Working in any vault and theme, and a look of its own. Planned as 1.3.0. Lines m
 > - *Proposed:* Screen magnet targets, with UI showing where the window will land.
 > - *Proposed:* "Copper by shadcn" parody.
 > - [ ] [View running agents](features/Phase%203/View%20running%20agents.md): See the coding agents you have running, and what each is doing, from the floating window.
+> - [ ] [Follow AI](features/Phase%203/Follow%20AI.md): While an AI works in the vault, the window glows and jumps to the note it's reading or editing, so you can watch it work.
