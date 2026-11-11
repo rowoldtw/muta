@@ -76,7 +76,7 @@ html.muta-root body.muta-window:not(.is-docked)::before {
 .muta-window.is-dragging {
   --pip-top: var(--pip-bar);
 }
-.muta-window:is(.is-near-bottom, .is-switcher-open, .is-menu-closing) {
+.muta-window:is(.is-near-bottom, .is-switcher-open, .is-menu-closing, .has-ask) {
   --pip-bottom: var(--pip-bottom-bar);
 }
 .muta-window.has-scroll:is(.is-near-right, .is-rail-open, .is-scrolling) {
@@ -516,7 +516,7 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
     right 240ms var(--pip-ease),
     opacity 160ms ease-out;
 }
-.muta-window:is(.is-near-bottom, .is-switcher-open, .is-menu-closing) .muta-switcher,
+.muta-window:is(.is-near-bottom, .is-switcher-open, .is-menu-closing, .has-ask) .muta-switcher,
 .muta-window.has-scroll:is(.is-near-right, .is-rail-open, .is-scrolling) .muta-rail {
   opacity: 1;
   pointer-events: auto;
@@ -753,6 +753,10 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
   /* Greens. */
   --muta-beam-colors: #10b981, #6ee7b7, #059669, #bef264, #34d399, #0d9488, #10b981;
 }
+:is(.muta-agent-glow, .muta-agent-rim)[data-agent="cursor"] {
+  /* Cursor's silvers. */
+  --muta-beam-colors: #f4f4f5, #a1a1aa, #e4e4e7, #71717a, #d4d4d8, #f4f4f5;
+}
 :is(.muta-agent-glow, .muta-agent-rim)[data-agent="antigravity"] {
   /* Google's blue, red, yellow and green. */
   --muta-beam-colors: #4285f4, #8ab4f8, #ea4335, #fbbc04, #34a853, #4285f4;
@@ -920,69 +924,222 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
   -webkit-mask: linear-gradient(to bottom, transparent var(--muta-notch-height, 38px), #000 calc(var(--muta-notch-height, 38px) + 48px));
 }
 /*
- * An agent waiting for the user (a permission, a question): its beam stops
- * turning and pulses where it stopped.
+ * An agent waiting on you (a permission, a question), after Waves
+ * (libraries.dev/waves): a wave of its colours breathes along the window's
+ * bottom edge, the bottom bar stays open with the request in the name's
+ * place, and clicking it raises the request over the page, growing out of
+ * the button with a band of colour running ahead of its edge. The other
+ * agents' beams carry on.
  */
-:is(.muta-agent-glow, .muta-agent-rim).is-waiting {
-  animation-play-state: paused;
+.muta-window,
+.muta-ask-wave,
+.muta-ask-panel,
+.muta-switcher-ask {
+  --muta-ask-color: #d97757;
+  --muta-ask-colors: #d97757, #f2a072, #c15f3c, #f6c9a8, #d97757;
 }
-.muta-agent-glow.is-waiting::after,
-.muta-agent-glow.is-waiting > *,
-.muta-agent-rim.is-waiting::before,
-.muta-agent-rim.is-waiting::after {
-  animation: muta-beam-wait 1.3s ease-in-out infinite;
+:is(.muta-ask-wave, .muta-ask-panel, .muta-switcher-ask)[data-agent="codex"] {
+  --muta-ask-color: #3b82f6;
+  --muta-ask-colors: #3b82f6, #7dd3fc, #2563eb, #a5b4fc, #3b82f6;
 }
-@keyframes muta-beam-wait {
+:is(.muta-ask-wave, .muta-ask-panel, .muta-switcher-ask)[data-agent="opencode"] {
+  --muta-ask-color: #10b981;
+  --muta-ask-colors: #10b981, #6ee7b7, #059669, #bef264, #10b981;
+}
+:is(.muta-ask-wave, .muta-ask-panel, .muta-switcher-ask)[data-agent="antigravity"] {
+  --muta-ask-color: #4285f4;
+  --muta-ask-colors: #4285f4, #ea4335, #fbbc04, #34a853, #4285f4;
+}
+:is(.muta-ask-wave, .muta-ask-panel, .muta-switcher-ask)[data-agent="cursor"] {
+  --muta-ask-color: #d4d4d8;
+  --muta-ask-colors: #f4f4f5, #a1a1aa, #e4e4e7, #71717a, #f4f4f5;
+}
+/* The wave along the bottom edge. */
+.muta-ask-wave {
+  position: fixed;
+  z-index: 14;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 110px;
+  pointer-events: none;
+  background:
+    radial-gradient(60% 100% at 50% 100%, color-mix(in srgb, var(--muta-ask-color) 55%, transparent), transparent 70%),
+    radial-gradient(35% 70% at 22% 100%, color-mix(in srgb, var(--muta-ask-color) 30%, transparent), transparent 75%),
+    radial-gradient(35% 70% at 78% 100%, color-mix(in srgb, var(--muta-ask-color) 30%, transparent), transparent 75%);
+  border-radius: 0 0 var(--pip-radius) var(--pip-radius);
+  opacity: 0;
+  transition: opacity 400ms ease-out;
+}
+.muta-window.has-ask .muta-ask-wave {
+  opacity: 1;
+  animation: muta-ask-breathe 2.4s ease-in-out infinite;
+}
+@keyframes muta-ask-breathe {
   50% {
-    opacity: 0.25;
+    opacity: 0.45;
+    transform: scaleY(0.82);
   }
 }
-/* What it's asking, in a pill at the top of the page, in its colour. */
-.muta-agent-ask {
-  --muta-ask-color: #d97757;
-  position: fixed;
-  z-index: 40;
-  top: calc(var(--pip-top) + 10px);
-  left: 50%;
-  max-width: calc(100% - 48px);
-  display: flex;
+.muta-ask-wave {
+  transform-origin: 50% 100%;
+}
+/* The request in the bottom bar, in the name's place. */
+.muta-switcher-ask {
+  display: none;
+  flex: 0 1 auto;
+  min-width: 0;
+  height: 24px;
+  margin-inline: auto;
+  padding: 0 10px 0 8px !important;
   align-items: center;
-  gap: 7px;
-  padding: 5px 11px 5px 9px;
+  gap: 6px;
   border-radius: 999px;
-  background: rgb(var(--muta-frame) / 0.92);
-  box-shadow:
-    inset 0 0 0 1px color-mix(in srgb, var(--muta-ask-color) 55%, transparent),
-    0 6px 18px rgb(0 0 0 / 0.3);
-  color: rgb(var(--muta-ink) / 0.92);
+  background: color-mix(in srgb, var(--muta-ask-color) 22%, transparent) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--muta-ask-color) 45%, transparent) !important;
+  color: rgb(var(--muta-ink) / 0.95);
   font-size: 12px;
-  pointer-events: none;
-  opacity: 0;
-  translate: -50% -6px;
-  transition:
-    opacity 220ms ease-out,
-    translate 320ms cubic-bezier(0.32, 0.72, 0, 1);
+  font-weight: 500;
+  cursor: default;
 }
-.muta-agent-ask.is-shown {
-  opacity: 1;
-  translate: -50% 0;
+.muta-switcher-ask-text {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
-.muta-agent-ask-dot {
+.muta-window.has-ask .muta-switcher-ask {
+  display: flex;
+}
+.muta-window.has-ask .muta-switcher-title {
+  display: none;
+}
+.muta-ask-dot {
   flex: none;
   width: 7px;
   height: 7px;
   border-radius: 50%;
   background: var(--muta-ask-color);
-  animation: muta-beam-wait 1.3s ease-in-out infinite;
+  box-shadow: 0 0 8px var(--muta-ask-color);
+  animation: muta-ask-dot 1.3s ease-in-out infinite;
 }
-.muta-agent-ask-text {
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+@keyframes muta-ask-dot {
+  50% {
+    opacity: 0.35;
+  }
 }
-.muta-agent-ask[data-agent="codex"] { --muta-ask-color: #3b82f6; }
-.muta-agent-ask[data-agent="opencode"] { --muta-ask-color: #10b981; }
-.muta-agent-ask[data-agent="antigravity"] { --muta-ask-color: #4285f4; }
+/* The request over the page: grows out of the button (--muta-wave-x/y), its colours running ahead. */
+.muta-ask-panel {
+  position: fixed;
+  z-index: 30;
+  inset: var(--pip-top) var(--pip-right) var(--pip-bottom) var(--pip-frame);
+  border-radius: calc(var(--pip-radius) - var(--pip-frame));
+  pointer-events: none;
+  --muta-wave: 0px;
+}
+.muta-ask-rim,
+.muta-ask-body {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  clip-path: ellipse(calc(var(--muta-wave) * 1.25) var(--muta-wave) at var(--muta-wave-x, 50%) var(--muta-wave-y, 100%));
+  transition: clip-path 560ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+.muta-ask-rim {
+  background: conic-gradient(from 200deg at var(--muta-wave-x, 50%) var(--muta-wave-y, 100%), var(--muta-ask-colors));
+  filter: saturate(1.3);
+  clip-path: ellipse(calc((var(--muta-wave) + var(--muta-wave-lead, 0px)) * 1.25) calc(var(--muta-wave) + var(--muta-wave-lead, 0px)) at var(--muta-wave-x, 50%) var(--muta-wave-y, 100%));
+  transition:
+    clip-path 560ms cubic-bezier(0.32, 0.72, 0, 1),
+    opacity 300ms ease-out 260ms;
+}
+.muta-ask-body {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 10px;
+  padding: 22px 24px;
+  background: rgb(var(--muta-frame) / 0.92);
+  backdrop-filter: blur(18px) saturate(1.4);
+  color: rgb(var(--muta-ink) / 0.92);
+}
+.muta-window.is-ask-open .muta-ask-panel {
+  pointer-events: auto;
+  --muta-wave: 160%;
+  --muta-wave-lead: 18px;
+}
+.muta-window.is-ask-open .muta-ask-rim {
+  opacity: 0;
+}
+.muta-window:not(.is-ask-open) .muta-ask-rim {
+  transition:
+    clip-path 420ms cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 0ms;
+}
+.muta-window:not(.is-ask-open) .muta-ask-body {
+  transition: clip-path 420ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.muta-ask-agent {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: rgb(var(--muta-ink) / 0.6);
+  font-size: 12px;
+  font-weight: 600;
+}
+.muta-ask-title {
+  font-size: 17px;
+  font-weight: 600;
+}
+.muta-ask-detail {
+  margin: 0;
+  max-height: 40%;
+  overflow: auto;
+  padding: 10px 12px;
+  border-radius: 9px;
+  background: rgb(0 0 0 / 0.28);
+  box-shadow: inset 0 0 0 1px rgb(var(--muta-ink) / 0.08);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.muta-ask-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+.muta-ask-actions button {
+  height: 30px;
+  padding: 0 16px;
+  border-radius: 9px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: default;
+}
+.muta-ask-deny {
+  background: rgb(var(--muta-ink) / 0.08) !important;
+  color: rgb(var(--muta-ink) / 0.9) !important;
+  box-shadow: inset 0 0 0 1px rgb(var(--muta-ink) / 0.12) !important;
+}
+.muta-ask-allow {
+  background: var(--muta-ask-color) !important;
+  color: #fff !important;
+  box-shadow: none !important;
+}
+.muta-ask-note {
+  color: rgb(var(--muta-ink) / 0.6);
+  font-size: 12px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .muta-window.has-ask .muta-ask-wave,
+  .muta-ask-dot {
+    animation: none;
+  }
+  .muta-ask-rim,
+  .muta-ask-body {
+    transition: none !important;
+  }
+}
 /*
  * See what changed: a line an agent just changed glows in its colour for a
  * moment, from a tint and a bar at its left, fading out.
@@ -995,6 +1152,7 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
 .muta-window .muta-changed[data-muta-changed="codex"] { --muta-change-color: #3b82f6; }
 .muta-window .muta-changed[data-muta-changed="opencode"] { --muta-change-color: #10b981; }
 .muta-window .muta-changed[data-muta-changed="antigravity"] { --muta-change-color: #4285f4; }
+.muta-window .muta-changed[data-muta-changed="cursor"] { --muta-change-color: #a1a1aa; }
 @keyframes muta-changed {
   0% {
     background-color: color-mix(in srgb, var(--muta-change-color) 34%, transparent);
@@ -1010,17 +1168,6 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .muta-agent-glow.is-waiting::after,
-  .muta-agent-glow.is-waiting > *,
-  .muta-agent-rim.is-waiting::before,
-  .muta-agent-rim.is-waiting::after,
-  .muta-agent-ask-dot {
-    animation: none;
-  }
-  .muta-agent-ask {
-    transition: opacity 120ms ease-out;
-    translate: -50% 0;
-  }
 }
 @keyframes muta-beam-turn {
   to {

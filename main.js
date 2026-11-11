@@ -142,6 +142,7 @@ const DEFAULTS = {
   agentCodex: true,
   agentOpencode: true,
   agentAntigravity: true,
+  agentCursor: true,
 }
 
 /**
@@ -202,7 +203,50 @@ const MUTA_DIR = ".muta"
 /** Marks Muta's hooks in Claude Code's settings, so they can be found and taken out again. */
 const HOOK_MARK = "muta-claude-hook"
 /** The Claude Code events Muta listens for, and the hook script that passes each on (to ~/.muta/claude-events.jsonl, one per line). */
-const HOOK_EVENTS = ["UserPromptSubmit", "PreToolUse", "PostToolUse", "Notification", "Stop", "SessionEnd"]
+const HOOK_EVENTS = ["UserPromptSubmit", "PreToolUse", "PostToolUse", "Notification", "PermissionRequest", "Stop", "SessionEnd"]
+/**
+ * Claude Code's PermissionRequest hook: passes the request on, then waits
+ * (up to 10 minutes) for an answer from the window in ~/.muta/answers/<id>
+ * and gives it to Claude Code. The terminal's own prompt stays up meanwhile;
+ * whichever is answered first counts, and Muta sends "skip" once the session
+ * carries on, so the script stops waiting.
+ */
+const PERMISSION_SCRIPT = `#!/bin/sh
+# Muta: lets Claude Code's permission prompts be answered from the Muta window too.
+dir="$HOME/.muta"
+mkdir -p "$dir/answers"
+id="$$-$(date +%s)"
+input=$(cat | tr -d '\\n')
+printf '{"at":%s000,"ask":"%s","hook":%s}\\n' "$(date +%s)" "$id" "$input" >> "$dir/claude-events.jsonl"
+i=0
+while [ $i -lt 1200 ]; do
+  if [ -f "$dir/answers/$id" ]; then
+    answer=$(cat "$dir/answers/$id")
+    rm -f "$dir/answers/$id"
+    case "$answer" in
+      allow) printf '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}' ;;
+      deny) printf '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"Denied from the Muta window."}}}' ;;
+    esac
+    exit 0
+  fi
+  sleep 0.5
+  i=$((i + 1))
+done
+exit 0
+`
+/** Cursor's hooks (~/.cursor/hooks.json): its events Muta listens for, and the script that passes each on (to ~/.muta/cursor-events.jsonl). */
+const CURSOR_HOOK_EVENTS = ["beforeSubmitPrompt", "afterFileEdit", "afterShellExecution", "afterMCPExecution", "afterAgentResponse", "stop", "sessionEnd"]
+const CURSOR_HOOK_MARK = "muta-cursor-hook"
+const CURSOR_SCRIPT = `#!/bin/sh
+# Muta: passes Cursor's agent hook events on to the Muta Obsidian plugin.
+dir="$HOME/.muta"
+mkdir -p "$dir"
+input=$(cat | tr -d '\\n')
+printf '{"at":%s000,"cursor":%s}\\n' "$(date +%s)" "$input" >> "$dir/cursor-events.jsonl"
+# beforeSubmitPrompt must say whether to go on: always.
+[ "$1" = "beforeSubmitPrompt" ] && printf '{"continue":true}'
+exit 0
+`
 const HOOK_SCRIPT = `#!/bin/sh
 # Muta: passes Claude Code's hook events on to the Muta Obsidian plugin.
 dir="$HOME/${".muta"}"
@@ -223,7 +267,7 @@ const AGENT_EDIT_MS = 300000
 const AGENT_TAIL = 4 * 1024 * 1024
 /** How many of a session's latest edits are kept. */
 const AGENT_EDITS = 20
-const AGENT_NAMES = { claude: "Claude Code", codex: "Codex", opencode: "OpenCode", antigravity: "Antigravity" }
+const AGENT_NAMES = { claude: "Claude Code", codex: "Codex", opencode: "OpenCode", antigravity: "Antigravity", cursor: "Cursor" }
 
 class AgentWatch {
   /**
@@ -313,38 +357,90 @@ class AgentWatch {
     return on
   }
 
-  /** Puts Muta's hooks into Claude Code's settings (and its script into ~/.muta), or takes them out. */
+  /** Puts Muta's hooks into Claude Code's settings (and its scripts into ~/.muta), or takes them out. */
   setHooks(on) {
-    const fs = require("fs")
     const path = require("path")
-    const script = path.join(this.homeDir(), MUTA_DIR, "claude-hook.sh")
+    const dir = path.join(this.homeDir(), MUTA_DIR)
+    const events = path.join(dir, "claude-hook.sh")
+    const permission = path.join(dir, "claude-permission.sh")
     if (on) {
-      fs.mkdirSync(path.dirname(script), { recursive: true })
-      fs.writeFileSync(script, HOOK_SCRIPT, { mode: 0o755 })
+      writeScript(events, HOOK_SCRIPT)
+      writeScript(permission, PERMISSION_SCRIPT)
     }
-    const file = this.claudeSettingsPath()
-    let settings = {}
-    try {
-      settings = JSON.parse(fs.readFileSync(file, "utf8"))
-    } catch (error) {
-      if (fs.existsSync(file)) throw new Error("Claude Code's settings.json couldn't be read, so it was left as it is")
-    }
-    const next = withHooks(settings, on ? `sh "${script}" # ${HOOK_MARK}` : null)
-    fs.mkdirSync(path.dirname(file), { recursive: true })
-    fs.writeFileSync(file, JSON.stringify(next, null, 2) + "\n")
+    editJson(this.claudeSettingsPath(), "Claude Code's settings.json", (settings) =>
+      withHooks(settings, on ? `sh "${events}" # ${HOOK_MARK}` : null, on ? `sh "${permission}" # ${HOOK_MARK}` : null)
+    )
     this.hooksChecked = null
   }
 
-  /** Reads the hook events written since last time (taking the file away first, so none are read twice or lost). */
-  readHookEvents() {
+  cursorHooksPath() {
+    return require("path").join(this.homeDir(), ".cursor", "hooks.json")
+  }
+
+  /** Whether Muta's hooks are in Cursor's hooks.json. */
+  cursorHooksInstalled() {
+    try {
+      return require("fs").readFileSync(this.cursorHooksPath(), "utf8").includes(CURSOR_HOOK_MARK)
+    } catch {
+      return false
+    }
+  }
+
+  /** Puts Muta's hooks into Cursor's hooks.json (and its script into ~/.muta), or takes them out. */
+  setCursorHooks(on) {
+    const path = require("path")
+    // The mark is in the script's name: Cursor may run the command without a shell, so no comment.
+    const script = path.join(this.homeDir(), MUTA_DIR, `${CURSOR_HOOK_MARK}.sh`)
+    if (on) writeScript(script, CURSOR_SCRIPT)
+    editJson(this.cursorHooksPath(), "Cursor's hooks.json", (config) => withCursorHooks(config, on ? script : null))
+  }
+
+  /** Answers a permission request from the window: "allow", "deny", or "skip" (stop waiting). */
+  answer(ask, decision) {
+    if (!/^[\w-]+$/.test(ask)) return
     const fs = require("fs")
     const path = require("path")
-    const file = path.join(this.homeDir(), MUTA_DIR, "claude-events.jsonl")
+    const dir = path.join(this.homeDir(), MUTA_DIR, "answers")
+    try {
+      fs.mkdirSync(dir, { recursive: true })
+      fs.writeFileSync(path.join(dir, ask), decision)
+    } catch {}
+    // Answered: no longer waiting on the user (until the session says otherwise).
+    for (const [id, session] of this.hookSessions)
+      if (session.attention && session.attention.ask === ask) this.hookSessions.set(id, { ...session, attention: null })
+    if (decision !== "skip") this.poll()
+  }
+
+  /** Reads the hook events (Claude Code's and Cursor's) written since last time. */
+  readHookEvents() {
+    for (const e of this.takeEvents("claude-events.jsonl")) {
+      const id = e.hook && e.hook.session_id
+      if (!id) continue
+      const before = this.hookSessions.get(id)
+      const after = claudeHookEvent(before, { ...e.hook, muta_ask: e.ask }, e.at || Date.now())
+      this.hookSessions.set(id, after)
+      // A permission request answered in the terminal: its hook script can stop waiting for the window.
+      const was = before && before.attention && before.attention.ask
+      if (was && (!after.attention || after.attention.ask !== was)) this.answer(was, "skip")
+    }
+    for (const e of this.takeEvents("cursor-events.jsonl")) {
+      const id = e.cursor && e.cursor.conversation_id
+      if (!id) continue
+      const key = `cursor:${id}`
+      this.hookSessions.set(key, cursorHookEvent(this.hookSessions.get(key), e.cursor, e.at || Date.now()))
+    }
+  }
+
+  /** The lines of ~/.muta/<name> as JSON, taking the file away first, so none are read twice or lost. */
+  takeEvents(name) {
+    const fs = require("fs")
+    const path = require("path")
+    const file = path.join(this.homeDir(), MUTA_DIR, name)
     const taken = file + ".reading"
     try {
       fs.renameSync(file, taken)
     } catch {
-      return
+      return []
     }
     let text = ""
     try {
@@ -352,17 +448,12 @@ class AgentWatch {
     } finally {
       fs.rmSync(taken, { force: true })
     }
-    for (const line of text.split("\n")) {
-      let e
+    const out = []
+    for (const line of text.split("\n"))
       try {
-        e = JSON.parse(line)
-      } catch {
-        continue
-      }
-      const id = e.hook && e.hook.session_id
-      if (!id) continue
-      this.hookSessions.set(id, claudeHookEvent(this.hookSessions.get(id), e.hook, e.at || Date.now()))
-    }
+        if (line) out.push(JSON.parse(line))
+      } catch {}
+    return out
   }
 
   /**
@@ -372,17 +463,17 @@ class AgentWatch {
    */
   claudeSessions(now) {
     if (!this.hooksInstalled(now)) return this.claude(now)
-    const hooked = this.claudeFromHooks(now)
+    const hooked = this.fromHooks(now, "claude")
     const known = new Set(this.hookSessions.keys())
     const path = require("path")
     return [...hooked, ...this.claude(now).filter((x) => !known.has(path.basename(x.id, ".jsonl")))]
   }
 
-  /** Claude Code's sessions from its hooks: those not over and heard from lately. */
-  claudeFromHooks(now) {
-    this.readHookEvents()
+  /** The sessions of agent kind heard from through hooks: those not over and heard from lately. */
+  fromHooks(now, kind) {
     const out = []
     for (const [id, session] of this.hookSessions) {
+      if (session.kind !== kind) continue
       if (session.ended || now - session.at > HOOK_STALE_MS) {
         if (now - session.at > AGENT_EDIT_MS) this.hookSessions.delete(id)
         continue
@@ -407,8 +498,10 @@ class AgentWatch {
       const now = Date.now()
       if (!this.roots || now - this.roots.at > 30000) this.roots = this.vaultRoots()
       const s = this.plugin.settings
+      this.readHookEvents()
       const sessions = [
         ...(s.agentClaude ? this.claudeSessions(now) : []),
+        ...(s.agentCursor ? this.fromHooks(now, "cursor") : []),
         ...(s.agentCodex ? this.codex(now) : []),
         ...(s.agentOpencode ? await this.opencode(now) : []),
         ...(s.agentAntigravity ? await this.antigravity(now) : []),
@@ -871,12 +964,27 @@ function claudeHookEvent(session, hook, at) {
     s.working = false
     s.attention = null
     s.ended = true
+  } else if (event === "PermissionRequest") {
+    // Asking now (the Notification comes only after ~6s): answerable from the window.
+    const input = hook.tool_input || {}
+    const tool = hook.tool_name || "a tool"
+    const detail = input.command || input.file_path || input.url || input.description || input.pattern || ""
+    s.working = true
+    s.attention = {
+      message: detail ? `${tool}: ${detail}` : `Use ${tool}`,
+      tool,
+      detail: String(detail),
+      ask: hook.muta_ask || null,
+      // These need an answer only the terminal can give (Claude Code wants their input rewritten).
+      answerable: !!hook.muta_ask && !/^(AskUserQuestion|ExitPlanMode)$/.test(tool),
+    }
   } else if (event === "Notification") {
     const type = hook.notification_type || ""
     const message = String(hook.message || "")
     // Its idle reminder (after a turn has ended) isn't a question.
     const asking = type ? type !== "idle_prompt" && type !== "auth_success" : !/waiting for your input/i.test(message)
-    if (asking && s.working) s.attention = { message: message || "Needs your input" }
+    // A request already being asked (PermissionRequest) keeps its details.
+    if (asking && s.working && !(s.attention && s.attention.ask)) s.attention = { message: message || "Needs your input", answerable: false }
   }
   if (event === "PreToolUse" && /^(Edit|MultiEdit|Write)$/.test(hook.tool_name || "")) {
     const input = hook.tool_input || {}
@@ -891,14 +999,19 @@ function claudeHookEvent(session, hook, at) {
  * Claude Code's settings with Muta's hooks in (running command) or taken out
  * (command null), leaving every other hook as it is.
  */
-function withHooks(settings, command) {
+function withHooks(settings, command, permissionCommand = command) {
   const next = { ...settings, hooks: { ...(settings.hooks || {}) } }
   const ours = (group) => (group.hooks || []).some((h) => String(h.command || "").includes(HOOK_MARK))
   for (const event of HOOK_EVENTS) {
     const groups = (next.hooks[event] || []).filter((g) => !ours(g))
     if (command) {
-      const group = { hooks: [{ type: "command", command, timeout: 5 }] }
-      if (event === "PreToolUse" || event === "PostToolUse") group.matcher = "*"
+      // The permission hook waits for an answer from the window (up to 10 minutes).
+      const hook =
+        event === "PermissionRequest"
+          ? { type: "command", command: permissionCommand, timeout: 610 }
+          : { type: "command", command, timeout: 5 }
+      const group = { hooks: [hook] }
+      if (event === "PreToolUse" || event === "PostToolUse" || event === "PermissionRequest") group.matcher = "*"
       groups.push(group)
     }
     if (groups.length) next.hooks[event] = groups
@@ -906,6 +1019,67 @@ function withHooks(settings, command) {
   }
   if (!Object.keys(next.hooks).length) delete next.hooks
   return next
+}
+
+/** Cursor's hooks.json with Muta's hooks in (running script) or taken out (script null), leaving every other hook. */
+function withCursorHooks(config, script) {
+  const next = { version: 1, ...config, hooks: { ...(config.hooks || {}) } }
+  for (const event of CURSOR_HOOK_EVENTS) {
+    const hooks = (next.hooks[event] || []).filter((h) => !String(h.command || "").includes(CURSOR_HOOK_MARK))
+    if (script) hooks.push({ command: `sh ${script} ${event}` })
+    if (hooks.length) next.hooks[event] = hooks
+    else delete next.hooks[event]
+  }
+  if (!Object.keys(next.hooks).length) delete next.hooks
+  return next
+}
+
+/**
+ * A Cursor agent conversation after hook event hook (at: when, ms). A prompt
+ * starts a turn, its tools and replies continue it, stop ends it, sessionEnd
+ * ends the conversation. File edits say which files and what's new.
+ */
+function cursorHookEvent(session, hook, at) {
+  const s = session
+    ? { ...session, edits: [...session.edits] }
+    : { id: hook.conversation_id, kind: "cursor", cwd: null, working: false, attention: null, ended: false, edits: [], at }
+  s.at = at
+  if (Array.isArray(hook.workspace_roots) && hook.workspace_roots[0]) s.cwd = hook.workspace_roots[0]
+  const event = hook.hook_event_name
+  if (event === "stop") s.working = false
+  else if (event === "sessionEnd") {
+    s.working = false
+    s.ended = true
+  } else {
+    s.working = true
+    s.ended = false
+  }
+  if (event === "afterFileEdit" && hook.file_path) {
+    const text = (hook.edits || []).map((e) => e.new_string || "").join("\n")
+    s.edits.push({ path: hook.file_path, text, at })
+    if (s.edits.length > AGENT_EDITS) s.edits.splice(0, s.edits.length - AGENT_EDITS)
+  }
+  return s
+}
+
+/** Writes an executable script. */
+function writeScript(file, text) {
+  const fs = require("fs")
+  fs.mkdirSync(require("path").dirname(file), { recursive: true })
+  fs.writeFileSync(file, text, { mode: 0o755 })
+}
+
+/** Rewrites JSON file through change (from {} if it isn't there); one that can't be read is left alone (named what for the error). */
+function editJson(file, what, change) {
+  const fs = require("fs")
+  let data = {}
+  try {
+    data = JSON.parse(fs.readFileSync(file, "utf8"))
+  } catch {
+    if (fs.existsSync(file)) throw new Error(`${what} couldn't be read, so it was left as it is`)
+  }
+  fs.mkdirSync(require("path").dirname(file), { recursive: true })
+  fs.writeFileSync(file, JSON.stringify(change(data), null, 2) + "\n")
 }
 
 /**
@@ -1102,31 +1276,98 @@ module.exports = class extends Plugin {
     if (!doc || doc === document) return
     const { agent } = this
     doc.body.classList.toggle("has-agent", !!agent)
-    this.showBeams(doc, agent ? agent.all : [])
+    // One waiting on you leaves the beams to those still working.
+    this.showBeams(doc, agent ? agent.all.filter((a) => !a.attention) : [])
     this.showAsk(doc, agent ? agent.all.find((a) => a.attention) : null)
   }
 
   /**
-   * An agent stopped to ask something (a permission, a question): a pill at
-   * the top of the page, in its colour, says which and what. It goes when
-   * the agent carries on.
+   * An agent waiting on you (a permission, a question): it leaves the beams
+   * to the agents still working, a wave in its colours breathes along the
+   * window's bottom edge, and the bottom bar's name becomes the request.
+   * Clicking it raises the request over the page (openAsk()).
    */
   showAsk(doc, asking) {
-    let pill = doc.body.querySelector(":scope > .muta-agent-ask")
-    if (!asking) {
-      if (pill) pill.removeClass("is-shown")
-      return
+    const body = doc.body
+    const sw = this.ui && this.ui.switcher
+    this.asking = asking || null
+    body.classList.toggle("has-ask", !!asking)
+    let wave = body.querySelector(":scope > .muta-ask-wave")
+    if (asking && !wave) wave = body.createDiv({ cls: "muta-ask-wave" })
+    if (wave) wave.dataset.agent = asking ? asking.kind : wave.dataset.agent || ""
+    if (asking && sw) {
+      sw.ask.dataset.agent = asking.kind
+      sw.askText.setText(`${AGENT_NAMES[asking.kind]} · ${asking.attention.tool || "needs you"}`)
+      sw.ask.setAttribute("aria-label", `${AGENT_NAMES[asking.kind]} needs you: ${asking.attention.message}`)
     }
-    if (!pill) {
-      pill = doc.body.createDiv({ cls: "muta-agent-ask" })
-      pill.createSpan({ cls: "muta-agent-ask-dot" })
-      pill.createSpan({ cls: "muta-agent-ask-text" })
+    const panel = this.askPanel
+    if (panel && panel.isConnected && body.classList.contains("is-ask-open")) {
+      if (!asking) this.closeAsk()
+      else this.fillAsk(asking)
     }
-    pill.dataset.agent = asking.kind
-    pill.querySelector(".muta-agent-ask-text").setText(`${AGENT_NAMES[asking.kind]} needs you · ${asking.attention.message}`)
-    pill.setAttribute("aria-live", "polite")
-    // Shown on the next frame, so it fades in.
-    doc.defaultView.requestAnimationFrame(() => pill.addClass("is-shown"))
+  }
+
+  /** The request's panel over the page: what the agent wants, and Deny and Allow when it can be answered from here. */
+  fillAsk(asking) {
+    const panel = this.askPanel
+    const a = asking.attention
+    panel.dataset.agent = asking.kind
+    const body = panel.querySelector(".muta-ask-body")
+    body.empty()
+    const who = body.createDiv({ cls: "muta-ask-agent" })
+    who.createSpan({ cls: "muta-ask-dot" })
+    who.createSpan({ text: AGENT_NAMES[asking.kind] })
+    body.createDiv({ cls: "muta-ask-title", text: a.tool ? `wants to use ${a.tool}` : "needs you" })
+    const detail = a.detail || (a.tool ? "" : a.message)
+    if (detail) body.createEl("pre", { cls: "muta-ask-detail", text: detail })
+    if (a.answerable && a.ask) {
+      const actions = body.createDiv({ cls: "muta-ask-actions" })
+      const deny = actions.createEl("button", { cls: "muta-ask-deny", text: "Deny" })
+      const allow = actions.createEl("button", { cls: "muta-ask-allow mod-cta", text: "Allow" })
+      deny.addEventListener("click", () => this.answerAsk(a.ask, "deny"))
+      allow.addEventListener("click", () => this.answerAsk(a.ask, "allow"))
+    } else body.createDiv({ cls: "muta-ask-note", text: `Answer this in ${AGENT_NAMES[asking.kind]}.` })
+  }
+
+  /**
+   * Raises the request over the page like a wave out of the bottom bar's
+   * button (after Waves, libraries.dev/waves): the panel grows from the
+   * button, a band of the agent's colours running ahead of its edge.
+   */
+  openAsk() {
+    const sw = this.ui && this.ui.switcher
+    if (!sw || !this.asking) return
+    const doc = sw.el.ownerDocument
+    let panel = this.askPanel
+    if (!panel || !panel.isConnected) {
+      panel = this.askPanel = doc.body.createDiv({ cls: "muta-ask-panel" })
+      panel.createDiv({ cls: "muta-ask-rim" })
+      panel.createDiv({ cls: "muta-ask-body" })
+      // A click outside it, or Escape, puts it back without answering.
+      doc.addEventListener("pointerdown", (e) => {
+        if (doc.body.classList.contains("is-ask-open") && !panel.contains(e.target) && !sw.ask.contains(e.target)) this.closeAsk()
+      }, true)
+      doc.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" && doc.body.classList.contains("is-ask-open")) this.closeAsk()
+      })
+    }
+    this.fillAsk(this.asking)
+    // The wave starts at the button.
+    const b = sw.ask.getBoundingClientRect()
+    const p = panel.getBoundingClientRect()
+    panel.style.setProperty("--muta-wave-x", `${b.left + b.width / 2 - p.left}px`)
+    panel.style.setProperty("--muta-wave-y", `${b.top + b.height / 2 - p.top}px`)
+    doc.body.classList.toggle("is-ask-open")
+  }
+
+  closeAsk() {
+    const doc = this.askPanel && this.askPanel.ownerDocument
+    if (doc) doc.body.classList.remove("is-ask-open")
+  }
+
+  answerAsk(ask, decision) {
+    this.agents.answer(ask, decision)
+    this.closeAsk()
   }
 
   /** An agent changed a note in the vault: kept a while, and lit at once if it's the note on show. */
@@ -1205,11 +1446,9 @@ module.exports = class extends Plugin {
       }
     }
     // Spread round the edge: each its share of the turn, new ones starting where the last left off.
-    // One that's waiting for the user holds still and pulses.
     shown.forEach((a, i) => {
       const beam = beams.get(a.id)
       for (const el of [beam.glow, beam.rim]) {
-        el.toggleClass("is-waiting", !!a.attention)
         el.style.setProperty("--muta-beam-offset", `${(360 / shown.length) * i}deg`)
         el.style.setProperty("--muta-beam-span", `${360 / shown.length}deg`)
       }
@@ -1429,6 +1668,12 @@ module.exports = class extends Plugin {
     const name = label.createSpan({ cls: "muta-switcher-name" })
     const next = bar.createEl("button", { cls: "muta-switcher-step", attr: { "aria-label": "Next feature", "data-tooltip-position": "top" } })
     setIcon(next, "chevron-right")
+    // An agent waiting on you takes the name's place (showAsk()); click it to answer.
+    const ask = bar.createEl("button", { cls: "muta-switcher-ask" })
+    ask.createSpan({ cls: "muta-ask-dot" })
+    const askText = ask.createSpan({ cls: "muta-switcher-ask-text" })
+    bar.insertBefore(ask, next)
+    ask.addEventListener("click", () => this.openAsk())
     prev.addEventListener("click", () => this.step(-1))
     next.addEventListener("click", () => this.step(1))
     this.attachNameSwipe(el, label)
@@ -1457,7 +1702,7 @@ module.exports = class extends Plugin {
       win.clearTimeout(this.menuClosing)
       this.menuClosing = win.setTimeout(() => body.classList.remove("is-menu-closing"), ms)
     }
-    return { el, title, label, name }
+    return { el, title, label, name, ask, askText }
   }
 
   /**
@@ -2298,6 +2543,19 @@ module.exports = class extends Plugin {
         speed = now - lastWheel > HELD_GAP_MS ? dy / 16 : speed * 0.4 + (dy / gap) * 0.6
         lastWheel = now
         if (!raw && !((atTop && dy < 0) || (atBottom && dy > 0))) {
+          // A flick's momentum about to reach the end with this scroll: the
+          // bounce starts now, as the page gets there, not a frame after it
+          // has stopped (that frame standing still was the delay).
+          const reaching = dy < 0 ? page.scrollTop + dy <= 0 : page.scrollTop + page.clientHeight + dy >= page.scrollHeight - 1
+          if (reaching && lifted && phases && !settled && !held) {
+            settled = true
+            el = sizer()
+            if (el && !reduceMotion()) {
+              el.getAnimations().forEach((x) => x.cancel())
+              overshoot(-speed)
+            }
+            return
+          }
           if (held) {
             event.preventDefault()
             page.scrollTop += dy
@@ -2704,8 +2962,9 @@ class MutaSettings extends PluginSettingTab {
           .setName("Claude Code hooks")
           .setDesc(
             "Adds hooks to Claude Code's settings (~/.claude/settings.json) that tell Muta the moment a session " +
-              "starts, edits a note, stops, or needs you (a permission or a question), instead of Muta reading its " +
-              "session files every few seconds. The events go to ~/.muta and are deleted once read."
+              "starts, edits a note, stops, or needs you, and let you allow or deny its permission requests from the " +
+              "window (the terminal still asks too; whichever you answer first counts). The events go to ~/.muta and " +
+              "are deleted once read."
           )
           .addToggle((t) =>
             t.setValue(plugin.agents.hooksInstalled()).onChange((v) => {
@@ -2737,6 +2996,31 @@ class MutaSettings extends PluginSettingTab {
           .setDesc("Watch Antigravity's conversations (~/.gemini/antigravity-cli).")
           .addToggle((t) => t.setValue(plugin.settings.agentAntigravity).onChange((v) => save("agentAntigravity", v)))
       )
+      .addSetting((s) =>
+        s
+          .setName("Cursor")
+          .setDesc("Watch Cursor's agent, in the app and the cursor-agent CLI (through its hooks, below).")
+          .addToggle((t) => t.setValue(plugin.settings.agentCursor).onChange((v) => save("agentCursor", v)))
+      )
+      .addSetting((s) =>
+        s
+          .setName("Cursor hooks")
+          .setDesc(
+            "Adds hooks to Cursor (~/.cursor/hooks.json) that tell Muta when its agent starts, edits a note and " +
+              "stops. Cursor keeps no records Muta can read otherwise. Takes effect in new Cursor chats."
+          )
+          .addToggle((t) =>
+            t.setValue(plugin.agents.cursorHooksInstalled()).onChange((v) => {
+              try {
+                plugin.agents.setCursorHooks(v)
+                new Notice(v ? "Muta: Cursor hooks added." : "Muta: Cursor hooks taken out.")
+              } catch (error) {
+                new Notice(`Muta: ${error.message}`)
+                t.setValue(!v)
+              }
+            })
+          )
+      )
 
     new SettingGroup(containerEl)
       .setHeading("Order")
@@ -2762,4 +3046,4 @@ class MutaSettings extends PluginSettingTab {
 }
 
 // For the tests (test/): the parts that don't need a window.
-module.exports.testing = { AgentWatch, bouncePath, rubberBand, within, BOUNCE_MAX, AGENT_STALE_MS, claudeHookEvent, withHooks, changedLines, HOOK_MARK }
+module.exports.testing = { AgentWatch, bouncePath, rubberBand, within, BOUNCE_MAX, AGENT_STALE_MS, claudeHookEvent, cursorHookEvent, withHooks, withCursorHooks, changedLines, HOOK_MARK, CURSOR_HOOK_MARK }
