@@ -53,7 +53,7 @@ const BOUNCE_MAX = 40
 /** Over its last this long (ms), a flick's bounce eases to rest. */
 const BOUNCE_SETTLE_MS = 160
 /** How much the page fades when pulled as far as it goes past its end. */
-const OVERSCROLL_FADE = 0.4
+const OVERSCROLL_FADE = 0.7
 /** How long after a bounce starts the trackpad's touch-down can still turn it into a pull (ms): it arrives late. */
 const TOUCH_WAIT_MS = 60
 /** How long a beam takes to go round the edge (styles.css's muta-beam-turn), and how many show at once. */
@@ -1880,7 +1880,11 @@ module.exports = class extends Plugin {
     }
     const target = () => Math.sign(raw) * rubberBand(Math.abs(raw), OVERSCROLL_MAX)
     // The page fades a little the further it's pulled, as if pulled away from you.
-    const fade = (px) => `${1 - OVERSCROLL_FADE * Math.min(Math.abs(px) / OVERSCROLL_MAX, 1)}`
+    // Eased (fast at first, then gentler), so it reads as a gradual fade.
+    const fade = (px) => {
+      const t = Math.min(Math.abs(px) / OVERSCROLL_MAX, 1)
+      return `${1 - OVERSCROLL_FADE * (1 - (1 - t) * (1 - t))}`
+    }
     const draw = () => {
       if (!el) return
       const out = Math.abs(shown) > 0.05
