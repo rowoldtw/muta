@@ -5,10 +5,19 @@
 # Covers the commits since the previous tag, or all of them for the first
 # release. feat: commits go under "New", fix: under "Fixes", each with its
 # body (minus Co-Authored-By lines) beneath it; chore:, docs: and the rest
-# are left out. Used by .github/workflows/release.yml.
+# are left out. A release's notes written by hand, in releases/<tag>.md, are
+# used instead when there are any. Used by .github/workflows/release.yml.
 set -eu
 
 tag=${1:?usage: release-notes.sh <tag>}
+
+# Notes written by hand for this release (releases/<tag>.md) take the place of the commits'.
+if [ -f "releases/$tag.md" ]; then
+  previous=$(git describe --tags --abbrev=0 "$tag^" 2>/dev/null || true)
+  cat "releases/$tag.md"
+  [ -n "$previous" ] && printf '\n**Full changelog:** https://github.com/rowoldtw/muta/compare/%s...%s\n' "$previous" "$tag"
+  exit 0
+fi
 previous=$(git describe --tags --abbrev=0 "$tag^" 2>/dev/null || true)
 range=${previous:+$previous..}$tag
 
