@@ -226,7 +226,7 @@ const RUNNING_MIN = 5
 /** Event files untouched this many days are deleted. */
 const EVENT_KEEP_DAYS = 2
 /** How much of the end of an event file is read the first time (bytes). */
-const EVENT_TAIL = 8 * 1024 * 1024
+const EVENT_TAIL = 2 * 1024 * 1024
 /** A session heard nothing from for this long counts as stopped (ms): a long tool run says nothing until it ends, and an interrupted Claude Code turn says nothing at all. */
 const HOOK_STALE_MS = 30 * 60 * 1000
 /** An edit this recent says which note an agent is working on (ms). */
@@ -297,8 +297,21 @@ while [ "\${pid:-0}" -gt 1 ]; do
     *) break ;;
   esac
 done
+# A tool's result: only which session and that it's done, not the result itself (a whole file, say).
+if printf '%s' "$input" | grep -qE '"hook_event_name" *: *"PostToolUse"'; then
+  field() { printf '%s' "$input" | sed -n 's/.*"'"$1"'" *: *"\\([^"]*\\)".*/\\1/p' | head -n 1; }
+  sid=$(field session_id)
+  [ -n "$sid" ] && input='{"session_id":"'"$sid"'","hook_event_name":"PostToolUse","cwd":"'"$(field cwd)"'","tool_name":"'"$(field tool_name)"'"}'
+fi
 mkdir -p "$dir/events"
+# One writer at a time, so two long events can't interleave (a lock left behind goes after half a second).
+i=0
+while ! mkdir "$dir/events/.lock" 2>/dev/null && [ $i -lt 50 ]; do
+  i=$((i + 1))
+  sleep 0.01
+done
 printf '{"at":%s000,"agent":"${agent}","pid":%s,"event":%s}\\n' "$(date +%s)" "\${pid:-0}" "$input" >> "$dir/events/${agent}-$(date +%Y-%m-%d).jsonl"
+rmdir "$dir/events/.lock" 2>/dev/null
 ${hold}exit 0
 `
 }
@@ -341,20 +354,24 @@ export default {
   id: "muta",
   async setup(ctx) {
     const home = ctx.location && ctx.location.directory
+    // Each session's own folder, from its events that say where they are.
+    const dirs = new Map()
     const controller = new AbortController()
     void (async () => {
       try {
         for await (const e of ctx.event.subscribe({ signal: controller.signal })) {
-          if (!/^(session\\.(execution\\.|deleted)|permission\\.(asked|replied))/.test(e.type)) continue
           const data = e.data || {}
           const sessionID = data.sessionID || (e.durable && e.durable.aggregateID)
-          put({ type: e.type, sessionID, directory: (e.location && e.location.directory) || home })
+          const where = (e.location && e.location.directory) || (data.location && data.location.directory)
+          if (sessionID && where) dirs.set(sessionID, where)
+          if (!/^(session\\.(execution\\.|deleted)|permission\\.(asked|replied))/.test(e.type)) continue
+          put({ type: e.type, sessionID, directory: dirs.get(sessionID) || home })
         }
       } catch {}
     })()
     await ctx.tool.hook("execute.before", async (e) => {
       const edit = /^(edit|write)$/.test(e.tool)
-      put({ type: "tool", tool: e.tool, sessionID: e.sessionID, directory: home, input: edit ? e.input : undefined })
+      put({ type: "tool", tool: e.tool, sessionID: e.sessionID, directory: dirs.get(e.sessionID) || home, input: edit ? e.input : undefined })
       // An edit, with a window watching agents edit: a moment for it to show where first.
       if (edit && holding()) await new Promise((r) => setTimeout(r, ${HOLD_EDIT_S * 1000}))
     })
@@ -433,7 +450,10 @@ const AGENT_EVENTS = {
             : event === "SessionEnd"
               ? "over"
               : null,
-      edits: event === "PreToolUse" && e.tool_name === "apply_patch" ? patchEdits(e.tool_input && e.tool_input.command) : [],
+      edits:
+        event === "PreToolUse" && e.tool_name === "apply_patch"
+          ? patchEdits(e.tool_input && e.tool_input.command).map((x) => ({ ...x, path: require("path").resolve(e.cwd || "/", x.path) }))
+          : [],
     }
   },
   opencode(e) {
@@ -614,6 +634,7 @@ class AgentWatch {
 
   stop() {
     window.clearInterval(this.timer)
+    window.clearTimeout(this.soon)
     this.timer = null
     for (const w of this.watchers) w.close()
     this.watchers = []
@@ -635,7 +656,8 @@ class AgentWatch {
     const mine = path.join(dir, id)
     // Watching agents edit: a mark of its own, so the scripts hold an edit a moment for it.
     const hold = this.dir("hold", id)
-    if (!on || !this.plugin.settings.agentEditView) fs.rmSync(hold, { force: true })
+    const holding = on && this.plugin.settings.agentEditView && (typeof this.plugin.isOpen !== "function" || this.plugin.isOpen())
+    if (!holding) fs.rmSync(hold, { force: true })
     if (!on) {
       // Lapses in a minute rather than at once, so a reload carries on where it was.
       const soon = new Date(Date.now() - (RUNNING_MIN - 1) * 60000)
@@ -651,7 +673,7 @@ class AgentWatch {
     try {
       fs.mkdirSync(dir, { recursive: true })
       const now = new Date()
-      for (const mark of this.plugin.settings.agentEditView ? [mine, hold] : [mine]) {
+      for (const mark of holding ? [mine, hold] : [mine]) {
         fs.mkdirSync(path.dirname(mark), { recursive: true })
         if (fs.existsSync(mark)) fs.utimesSync(mark, now, now)
         else fs.writeFileSync(mark, base)
@@ -778,6 +800,8 @@ class AgentWatch {
       } catch {
         continue
       }
+      // First seen and quiet for a while: nothing in it can still be at work.
+      if (!this.files.has(file) && now - fs.statSync(file).mtimeMs > HOOK_STALE_MS) this.files.set(file, { pos: size, rest: "" })
       const lines = this.newLines(file, size)
       if (!on.has(kind)) continue
       for (const line of lines) {
@@ -843,7 +867,7 @@ class AgentWatch {
   }
 
   poll() {
-    if (this.busy) return
+    if (this.busy || !this.timer) return
     this.busy = true
     try {
       const now = Date.now()
@@ -1110,6 +1134,17 @@ function editBlocks(page) {
 /** A block's text, its spaces evened out. */
 const blockText = (el) => el.textContent.replace(/\s+/g, " ").trim()
 
+/**
+ * Whether edit's change is on the page (its blocks): the lines it adds are
+ * there, or with none to add, the lines it takes away are gone.
+ */
+function landed(blocks, edit) {
+  const { added, removed } = editLines(edit.old, edit.text)
+  const has = (line) => blocks.some((el) => blockText(el).includes(line))
+  if (changedLines(edit.text).length) return added.every(has)
+  return removed.length > 0 && !removed.some(has)
+}
+
 /** Of blocks, those not holding another of them: a list item's own text, not its whole list. */
 function innermost(blocks) {
   return blocks.filter((el) => !blocks.some((o) => o !== el && el.contains(o)))
@@ -1344,14 +1379,14 @@ module.exports = class extends Plugin {
     if (!page || !this.leaf || this.leaf.view.file !== edit.file) return
     const blocks = editBlocks(page)
     const pending = { ...edit, seen: Date.now(), before: new Set(blocks.map(blockText)), tinted: [] }
-    // Its change is on the page already (Cursor's, or it came in first): it types in now.
-    const { added } = editLines(edit.old, edit.text)
-    const there = added.length && added.every((line) => blocks.some((el) => blockText(el).includes(line)))
-    if (edit.after || there) {
+    // Its change is on the page already (it came in late): it types in now.
+    if (landed(blocks, pending)) {
       pending.before = null
       this.pendingEdits.push(pending)
       return this.playEdits(edit.file)
     }
+    // Cursor's: the file has changed, but the page hasn't caught up yet.
+    if (edit.after) pending.before = null
     if (edit.old) {
       pending.tinted = blocksWith(blocks, changedLines(edit.old))
       for (const el of pending.tinted) {
@@ -1375,7 +1410,7 @@ module.exports = class extends Plugin {
     if (this.editObserver && this.editObserver.page === page) return
     if (this.editObserver) this.editObserver.disconnect()
     const observer = new page.ownerDocument.defaultView.MutationObserver(() => {
-      if (!page.isConnected || !this.pendingEdits.some((p) => p.file === file && p.before)) {
+      if (!page.isConnected || !this.pendingEdits.some((p) => p.file === file)) {
         observer.disconnect()
         if (this.editObserver === observer) this.editObserver = null
         return
@@ -1398,8 +1433,10 @@ module.exports = class extends Plugin {
     const now = Date.now()
     this.pendingEdits = this.pendingEdits.filter((p) => now - p.seen < EDIT_KEEP_MS)
     const blocks = editBlocks(page)
-    const isNew = (p) => innermost(blocks.filter((el) => !p.before.has(blockText(el))))
-    const due = this.pendingEdits.filter((p) => p.file === file && (!early || (p.before && isNew(p).length)))
+    const isNew = (p) => (p.before ? innermost(blocks.filter((el) => !p.before.has(blockText(el)))) : [])
+    // Only edits now on the page: one denied, or still waiting on you, waits on
+    // (and other changes to the page, yours say, aren't taken for it).
+    const due = this.pendingEdits.filter((p) => p.file === file && landed(blocks, p))
     if (!due.length) return
     this.pendingEdits = this.pendingEdits.filter((p) => !due.includes(p))
     let first = null
@@ -1407,9 +1444,10 @@ module.exports = class extends Plugin {
     for (const p of due) {
       p.tinted.forEach((el) => el.removeClass("muta-edit-old"))
       const { added, removed } = editLines(p.old, p.text)
-      // What's new on the page since the edit was heard of; else where its new lines are.
-      let changed = p.before ? isNew(p) : []
-      if (!changed.length) changed = blocksWith(blocks, added)
+      // Where its new lines are, those new on the page since it was heard of first.
+      const holding = blocksWith(blocks, added)
+      const fresh = isNew(p).filter((el) => holding.includes(el))
+      let changed = fresh.length ? fresh : holding
       changed = changed.slice(0, EDIT_MAX_BLOCKS)
       // Heard of only once the page had it (the usual case: the agent writes as
       // soon as its hook returns), what it replaced shows a moment, struck
@@ -1663,7 +1701,13 @@ module.exports = class extends Plugin {
         const axis = this.nextAxis || "y"
         const peek = this.nextPeek
         this.next = null
-        await this.show(file, direction, axis, peek)
+        try {
+          await this.show(file, direction, axis, peek)
+        } catch (error) {
+          console.error("Muta: showing a page", error)
+          // Failed before it could show: no invisible window left catching clicks.
+          if (this.hidden) this.closeWindow()
+        }
       }
     } finally {
       this.busy = false
@@ -3292,13 +3336,17 @@ class MutaSettings extends PluginSettingTab {
           .setDesc(AGENT_HOOKS_SAY[kind])
           .addToggle((t) =>
             t.setValue(plugin.agents.installed(kind)).onChange((v) => {
+              // Setting it back after a failure isn't another change to make.
+              if (t.reverting) return
               try {
                 plugin.agents.setHooks(kind, v)
                 new Notice(v ? `Muta: ${AGENT_NAMES[kind]}'s hooks added.` : `Muta: ${AGENT_NAMES[kind]}'s hooks taken out.`)
                 plugin.agents.poll()
               } catch (error) {
                 new Notice(`Muta: ${error.message}`)
+                t.reverting = true
                 t.setValue(!v)
+                t.reverting = false
               }
             })
           )
@@ -3351,6 +3399,7 @@ module.exports.testing = {
   blocksWith,
   innermost,
   editLines,
+  landed,
   keysOutline,
   agentPrompt,
   menuItems,

@@ -235,3 +235,29 @@ test("with a window watching agents edit, an edit is held a moment so the window
   w.markRunning(true)
   expect(timed("claude-hook.sh", edit)).toBeLessThan(220)
 })
+
+test("a tool's result is kept short: its session and that it's done, not the result itself; writers don't interleave", () => {
+  const { w, vault } = watcher()
+  w.setHooks("claude", true)
+  w.markRunning(true)
+  const env = { ...process.env, HOME: home }
+  const script = path.join(home, ".muta", "claude-hook.sh")
+  const big = "x".repeat(200000)
+  execFileSync("sh", [script], { input: JSON.stringify({ session_id: "s", cwd: vault, hook_event_name: "PostToolUse", tool_name: "Read", tool_response: { content: `"cwd": "nope" ${big}` } }), env })
+  expect(events().map((e) => e.event)).toEqual([{ session_id: "s", hook_event_name: "PostToolUse", cwd: vault, tool_name: "Read" }])
+  // Several long events at once: each a whole line.
+  const { spawn } = require("child_process")
+  const runs = Array.from({ length: 6 }, (_, i) =>
+    new Promise((resolve) => {
+      const child = spawn("sh", [script], { env })
+      child.on("close", resolve)
+      child.stdin.end(JSON.stringify({ session_id: `p${i}`, cwd: vault, hook_event_name: "PreToolUse", tool_name: "Write", tool_input: { file_path: "/v/a.md", content: big } }))
+    })
+  )
+  return Promise.all(runs).then(() => {
+    const kept = events()
+    expect(kept).toHaveLength(7)
+    expect(kept.slice(1).every((e) => e.event.tool_input.content.length === big.length)).toBe(true)
+    expect(fs.existsSync(path.join(home, ".muta", "events", ".lock"))).toBe(false)
+  })
+}, 20000)

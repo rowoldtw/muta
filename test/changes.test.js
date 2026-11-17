@@ -72,3 +72,19 @@ test("an edit's lines: what it adds, and what it takes away", () => {
   // A whole file written: everything is new.
   expect(editLines("", "# Title\n\nBody text here.").added).toEqual(["Title", "Body text here."])
 })
+
+test("an edit has landed when its new lines are on the page (or, removing only, its old ones are gone)", () => {
+  const { landed } = testing
+  const page = [block("Claude is writing here now."), block("Second step")]
+  expect(landed(page, { old: "Nothing here yet.", text: "Claude is writing here now." })).toBe(true)
+  // Denied, or still waiting on you: not there, so nothing on the page is taken for it.
+  expect(landed(page, { old: "Second step", text: "Second step, done properly" })).toBe(false)
+  expect(landed(page, { old: "An old line to remove", text: "" })).toBe(true)
+  expect(landed(page, { old: "Second step", text: "" })).toBe(false)
+})
+
+test("a Codex patch's paths are taken from the folder it runs in", () => {
+  const patch = "*** Begin Patch\n*** Update File: notes/todo.md\n@@\n-a\n+b\n*** End Patch"
+  const s = agentEvent("codex", undefined, { session_id: "s", cwd: "/v", hook_event_name: "PreToolUse", tool_name: "apply_patch", tool_input: { command: patch } }, 1000)
+  expect(s.edits[0].path).toBe("/v/notes/todo.md")
+})
