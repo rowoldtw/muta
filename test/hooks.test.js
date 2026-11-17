@@ -261,3 +261,10 @@ test("a tool's result is kept short: its session and that it's done, not the res
     expect(fs.existsSync(path.join(home, ".muta", "events", ".lock"))).toBe(false)
   })
 }, 20000)
+
+test("~/.muta is readable by you alone", () => {
+  const { w } = watcher()
+  fs.mkdirSync(path.join(home, ".muta"), { mode: 0o755 })
+  w.setHooks("claude", true)
+  expect(fs.statSync(path.join(home, ".muta")).mode & 0o777).toBe(0o700)
+})

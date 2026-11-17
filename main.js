@@ -620,6 +620,18 @@ class AgentWatch {
     return require("os").homedir()
   }
 
+  /**
+   * ~/.muta, readable by you alone: what agents send through their hooks
+   * (prompts, the text they write) is kept there a while.
+   */
+  secure() {
+    const fs = require("fs")
+    try {
+      fs.mkdirSync(this.dir(), { recursive: true, mode: 0o700 })
+      fs.chmodSync(this.dir(), 0o700)
+    } catch {}
+  }
+
   /** A path in ~/.muta. */
   dir(...parts) {
     return require("path").join(this.homeDir(), MUTA_DIR, ...parts)
@@ -627,6 +639,7 @@ class AgentWatch {
 
   start() {
     if (this.timer) return
+    this.secure()
     this.timer = window.setInterval(() => this.poll(), AGENT_POLL_MS)
     this.watch()
     this.poll()
@@ -733,6 +746,7 @@ class AgentWatch {
   /** Puts Muta's hooks for agent kind in (and its script into ~/.muta), or takes them out. */
   setHooks(kind, on) {
     const fs = require("fs")
+    this.secure()
     const path = require("path")
     const file = this.hookFile(kind)
     // Claude Code's script keeps its name: sessions already running call it.
