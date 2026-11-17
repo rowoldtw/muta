@@ -56,13 +56,30 @@ const BOUNCE_SETTLE_MS = 160
 const OVERSCROLL_FADE = 0.7
 /** How long after a bounce starts the trackpad's touch-down can still turn it into a pull (ms): it arrives late. */
 const TOUCH_WAIT_MS = 60
-/** See what changed: how long an agent's edit is kept to light when its note is shown (ms), how long the page takes to render it, and how long the glow lasts. */
-const CHANGE_KEEP_MS = 2 * 60 * 1000
-const CHANGE_RENDER_MS = 450
-const CHANGE_GLOW_MS = 3600
+/**
+ * Watching agents edit: an edit heard of later than this after it was made
+ * is left alone (read back after a reload, say); one not on the page by this
+ * long after is dropped (denied, say), its tint before that (ms). The page
+ * takes this long to render a change; each word types in this fast, a block
+ * of text in this long at most, and only so many blocks type in per edit;
+ * the cursor takes this long to get to the next block.
+ */
+const EDIT_FRESH_MS = 15000
+const EDIT_KEEP_MS = 5 * 60 * 1000
+const EDIT_TINT_MS = 60000
+const EDIT_RENDER_MS = 450
+const EDIT_WORD_MS = 45
+const EDIT_TYPE_MAX_MS = 900
+const EDIT_MAX_BLOCKS = 6
+/** How long the cursor takes to glide over to the next place to type (ms). */
+const EDIT_CARET_TRAVEL_MS = 260
+/** How long the cursor stays, blinking, after an edit, for the next to glide on from (ms). */
+const EDIT_CARET_LINGER_MS = 8000
 /** How long a beam takes to go round the edge (styles.css's muta-beam-turn), and how many show at once. */
 const BEAM_TURN_MS = 2600
 const MAX_BEAMS = 4
+/** How long to wait for a new window to appear (ms): a cold start can be slow. */
+const WINDOW_WAIT_MS = 4000
 /** The top bar drags the window; its buttons still click. */
 const HANDLE = ".view-header"
 const INTERACTIVE = "a, button, input, .clickable-icon"
@@ -135,14 +152,12 @@ const DEFAULTS = {
   markPreviewed: true,
   /** The key to hold while hovering a link to preview it ("meta", "alt", "ctrl", "shift"), or "none". */
   hoverKey: "meta",
-  /** A glow runs round the window's inner edge while a local agent works in this vault. */
+  /** A beam runs round the window's edge while a local agent works in this vault (the agents with Muta's hooks in). */
   agentIndicator: true,
-  /** Which agents to watch for. */
-  agentClaude: true,
-  agentCodex: true,
-  agentOpencode: true,
-  agentAntigravity: true,
-  agentCursor: true,
+  /** Watching agents edit: the change typed in on the note on show. */
+  agentEditView: true,
+  /** Agents working anywhere in a project the vault links into (a git repository holding a linked folder) count too. */
+  agentLinkedProjects: false,
 }
 
 /**
@@ -183,95 +198,384 @@ const alive = (w) => !!(w && !w.isDestroyed())
 
 // ── Agents: local coding agents at work in this vault ──────────────────
 //
-// Claude Code, Codex, OpenCode and Antigravity each keep a record of their
-// sessions on disk: Claude Code a JSONL file per session under
-// ~/.claude/projects (named after the folder it runs in), Codex one per
-// session under ~/.codex/sessions (by date), OpenCode a SQLite database, and
-// Antigravity a SQLite database of its conversations plus one per
-// conversation under ~/.gemini/antigravity-cli. A session is working while its
-// record says it's mid-turn (a prompt or tool result not yet answered with a
-// final reply); the files it has edited (Claude Code's Edit and Write,
-// Codex's patches, OpenCode's edit and write, the files Antigravity's steps write) say which notes. It's working
-// in this vault when it runs from inside the vault or has just edited a note
-// in it, including notes the vault links to from elsewhere (a symlinked
-// folder, as the test vault's features/ is).
+// Each agent tells Muta what it's doing through its own hooks, which Muta
+// puts in when it's turned on in Settings › AI: Claude Code's, Codex's,
+// Cursor's and Antigravity's hooks run a small script, and OpenCode loads a
+// plugin. Each event goes, a JSON line, into
+// ~/.muta/events/<agent>-<date>.jsonl, but only while Muta is running (a
+// vault's mark in ~/.muta/running is fresh), so nothing piles up while it
+// isn't. Every vault reads the files, each keeping its own place in them,
+// so several vaults can watch at once and a reload picks up the sessions
+// where they are. A session is working from a prompt (or any tool call)
+// until its turn ends; its edits say which notes. It's working in this vault
+// when it runs from inside the vault or has just edited a note in it,
+// including notes the vault links to from elsewhere (a symlinked folder, as
+// the test vault's features/ is), or, with Agents in linked projects on,
+// anywhere in a project the vault links into.
 
-/** How often the agents' records are checked anyway (ms); changes to them are seen at once (watchers, and Claude Code's hooks). */
+/** How often the events are checked anyway (ms); new ones are seen at once (a watch on the folder). */
 const AGENT_POLL_MS = 4000
-/** Folder Muta keeps the Claude Code hook script and its events in (in the home folder). */
+/** Folder Muta keeps its hook scripts, events and running marks in (in the home folder). */
 const MUTA_DIR = ".muta"
-/** Marks Muta's hooks in Claude Code's settings, so they can be found and taken out again. */
-const HOOK_MARK = "muta-claude-hook"
-/** The Claude Code events Muta listens for, and the hook script that passes each on (to ~/.muta/claude-events.jsonl, one per line). */
-const HOOK_EVENTS = ["UserPromptSubmit", "PreToolUse", "PostToolUse", "PermissionRequest", "Stop", "SessionEnd"]
 /**
- * Claude Code's questions (its AskUserQuestion tool, through the
- * PermissionRequest hook): the script passes the question on, then waits (up
- * to 10 minutes) for an answer from the window in ~/.muta/answers/<id> and
- * gives it to Claude Code. The terminal asks too meanwhile; whichever is
- * answered first counts, and Muta sends "skip" once the session carries on,
- * so the script stops waiting.
+ * A vault's mark in ~/.muta/running counts as Muta running for this long
+ * after it was last touched (minutes): timers in a hidden Obsidian can slow
+ * to about once a minute.
  */
-const QUESTION_SCRIPT = `#!/bin/sh
-# Muta: lets the questions Claude Code asks be answered from the Muta window too.
-dir="$HOME/.muta"
-mkdir -p "$dir/answers"
-id="$$-$(date +%s)"
-input=$(cat | tr -d '\\n')
-printf '{"at":%s000,"ask":"%s","hook":%s}\\n' "$(date +%s)" "$id" "$input" >> "$dir/claude-events.jsonl"
-i=0
-while [ $i -lt 1200 ]; do
-  if [ -f "$dir/answers/$id" ]; then
-    answer=$(cat "$dir/answers/$id")
-    rm -f "$dir/answers/$id"
-    [ "$answer" != "skip" ] && printf '%s' "$answer"
-    exit 0
-  fi
-  sleep 0.5
-  i=$((i + 1))
-done
-exit 0
-`
-/** Cursor's hooks (~/.cursor/hooks.json): its events Muta listens for, and the script that passes each on (to ~/.muta/cursor-events.jsonl). */
-const CURSOR_HOOK_EVENTS = ["beforeSubmitPrompt", "afterFileEdit", "afterShellExecution", "afterMCPExecution", "afterAgentResponse", "stop", "sessionEnd"]
-const CURSOR_HOOK_MARK = "muta-cursor-hook"
-const CURSOR_SCRIPT = `#!/bin/sh
-# Muta: passes Cursor's agent hook events on to the Muta Obsidian plugin.
-dir="$HOME/.muta"
-mkdir -p "$dir"
-input=$(cat | tr -d '\\n')
-printf '{"at":%s000,"cursor":%s}\\n' "$(date +%s)" "$input" >> "$dir/cursor-events.jsonl"
-# beforeSubmitPrompt must say whether to go on: always.
-[ "$1" = "beforeSubmitPrompt" ] && printf '{"continue":true}'
-exit 0
-`
-const HOOK_SCRIPT = `#!/bin/sh
-# Muta: passes Claude Code's hook events on to the Muta Obsidian plugin.
-dir="$HOME/${".muta"}"
-mkdir -p "$dir"
-input=$(cat | tr -d '\\n')
-printf '{"at":%s000,"hook":%s}\\n' "$(date +%s)" "$input" >> "$dir/claude-events.jsonl"
-exit 0
-`
-/** A Claude Code session heard from through its hooks counts as stopped after this long without a word (ms): a long tool run says nothing until it ends. */
+const RUNNING_MIN = 5
+/** Event files untouched this many days are deleted. */
+const EVENT_KEEP_DAYS = 2
+/** How much of the end of an event file is read the first time (bytes). */
+const EVENT_TAIL = 8 * 1024 * 1024
+/** A session heard nothing from for this long counts as stopped (ms): a long tool run says nothing until it ends, and an interrupted Claude Code turn says nothing at all. */
 const HOOK_STALE_MS = 30 * 60 * 1000
-/** A session's record says whether it's mid-turn; one untouched this long is taken as stopped whatever it says (ms), as after a crash. */
-const AGENT_STALE_MS = 600000
-/** Without that (a turn begun before the part of the record read), one written to this recently is working (ms). */
-const AGENT_ACTIVE_MS = 45000
 /** An edit this recent says which note an agent is working on (ms). */
 const AGENT_EDIT_MS = 300000
-/** How much of the end of a session's record is read the first time it's seen (bytes); after that, only what's been added. Claude Code's hold whole requests, a megabyte or more a line. */
-const AGENT_TAIL = 4 * 1024 * 1024
 /** How many of a session's latest edits are kept. */
 const AGENT_EDITS = 20
+/** The agents Muta can watch, in the order they're listed. */
+const AGENTS = ["claude", "codex", "opencode", "cursor", "antigravity"]
 const AGENT_NAMES = { claude: "Claude Code", codex: "Codex", opencode: "OpenCode", antigravity: "Antigravity", cursor: "Cursor" }
+/** Marks Muta's hooks in Claude Code's settings, so they can be found and taken out again. */
+const HOOK_MARK = "muta-claude-hook"
+/** Claude Code's events Muta listens for, with their matchers. A tool call keeps a long turn alive; edits say which files. */
+const CLAUDE_HOOKS = { UserPromptSubmit: null, PreToolUse: "*", PermissionRequest: "*", PostToolUse: "*", Stop: null, StopFailure: null, SessionEnd: null, Notification: "idle_prompt" }
+/** Codex's (~/.codex/hooks.json, the same shape): its patches say which files. */
+const CODEX_HOOKS = { UserPromptSubmit: null, PreToolUse: "*", PermissionRequest: "*", PostToolUse: "*", Stop: null, Interrupt: null, SessionEnd: null }
+const CODEX_HOOK_MARK = "muta-codex-hook"
+/** Cursor's hooks (~/.cursor/hooks.json). */
+const CURSOR_HOOK_EVENTS = ["beforeSubmitPrompt", "afterFileEdit", "afterShellExecution", "afterMCPExecution", "afterAgentResponse", "stop", "sessionEnd"]
+const CURSOR_HOOK_MARK = "muta-cursor-hook"
+/** Antigravity's (~/.gemini/config/hooks.json): Muta's named hook. */
+const ANTIGRAVITY_HOOK_MARK = "muta-antigravity-hook"
+/**
+ * How a hook script knows an edit is about to land (the event, then the
+ * tool), to hold it HOLD_EDIT_S (seconds) while a window watches agents
+ * edit, so the window hears of it before the page changes. Cursor's comes
+ * after; OpenCode's plugin holds its own.
+ */
+const HOOK_EDITS = {
+  claude: ['"hook_event_name" *: *"PreToolUse"', '"tool_name" *: *"(Edit|MultiEdit|Write)"'],
+  codex: ['"hook_event_name" *: *"PreToolUse"', '"tool_name" *: *"apply_patch"'],
+  antigravity: ['"hookEventName" *: *"PreToolUse"', '"name" *: *"(edit_file|write_file)"'],
+}
+const HOLD_EDIT_S = 0.25
+/** OpenCode 2's plugin, in its global plugins folder. */
+const OPENCODE_PLUGIN_MARK = "muta-opencode-plugin"
+
+/**
+ * The script agent's hooks run: it passes the event on its stdin to
+ * ~/.muta/events while Muta is running, and says nothing back (except that
+ * Cursor's beforeSubmitPrompt must always be told to go on). With each
+ * event goes the agent's process, so a session ends when it exits however
+ * it went (a crash, killed, an error with no end-of-turn hook). find rounds a
+ * mark's age up to whole minutes, so it allows one more than RUNNING_MIN:
+ * the scripts keep events at least as long as the watcher counts a mark.
+ */
+function hookScript(agent) {
+  const proceed = agent === "cursor" ? `[ "$1" = "beforeSubmitPrompt" ] && printf '{"continue":true}'\n` : ""
+  const edit = HOOK_EDITS[agent]
+  const hold = edit
+    ? `# An edit about to land, with a window watching agents edit: a moment for it to show where first.
+if [ -n "$(find "$dir/hold" -type f -mmin -${RUNNING_MIN + 1} 2>/dev/null | head -n 1)" ] &&
+  printf '%s' "$input" | grep -qE '${edit[0]}' && printf '%s' "$input" | grep -qE '${edit[1]}'; then
+  sleep ${HOLD_EDIT_S}
+fi
+`
+    : ""
+  return `#!/bin/sh
+# Muta: passes ${AGENT_NAMES[agent]}'s hook events on to the Muta Obsidian plugin while it's running.
+dir="$HOME/${MUTA_DIR}"
+input=$(cat | tr -d '\\n')
+${proceed}[ -n "$(find "$dir/running" -type f -mmin -${RUNNING_MIN + 1} 2>/dev/null | head -n 1)" ] || exit 0
+[ -n "$input" ] || exit 0
+# The agent's own process: the first above this script that isn't a shell.
+pid=$PPID
+while [ "\${pid:-0}" -gt 1 ]; do
+  case "$(ps -o comm= -p "$pid" 2>/dev/null)" in
+    sh | */sh | bash | */bash | zsh | */zsh | dash | */dash | -*) pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ') ;;
+    *) break ;;
+  esac
+done
+mkdir -p "$dir/events"
+printf '{"at":%s000,"agent":"${agent}","pid":%s,"event":%s}\\n' "$(date +%s)" "\${pid:-0}" "$input" >> "$dir/events/${agent}-$(date +%Y-%m-%d).jsonl"
+${hold}exit 0
+`
+}
+
+/** OpenCode 2's plugin: its turns starting and ending, its permission requests, and its edits and writes, into ~/.muta/events while Muta is running. */
+const OPENCODE_PLUGIN = `// Muta: passes OpenCode's turns and edits on to the Muta Obsidian plugin while it's running. (${OPENCODE_PLUGIN_MARK})
+import { appendFileSync, mkdirSync, readdirSync, statSync } from "fs"
+import { homedir } from "os"
+import { join } from "path"
+
+const dir = join(process.env.HOME || homedir(), "${MUTA_DIR}")
+const running = () => {
+  try {
+    const marks = join(dir, "running")
+    return readdirSync(marks).some((f) => Date.now() - statSync(join(marks, f)).mtimeMs < ${RUNNING_MIN} * 60000)
+  } catch {
+    return false
+  }
+}
+const holding = () => {
+  try {
+    const marks = join(dir, "hold")
+    return readdirSync(marks).some((f) => Date.now() - statSync(join(marks, f)).mtimeMs < ${RUNNING_MIN} * 60000)
+  } catch {
+    return false
+  }
+}
+const pad = (n) => String(n).padStart(2, "0")
+const put = (event) => {
+  if (!running()) return
+  try {
+    const d = new Date()
+    mkdirSync(join(dir, "events"), { recursive: true })
+    const file = join(dir, "events", \`opencode-\${d.getFullYear()}-\${pad(d.getMonth() + 1)}-\${pad(d.getDate())}.jsonl\`)
+    appendFileSync(file, JSON.stringify({ at: Date.now(), agent: "opencode", pid: process.pid, event }) + "\\n")
+  } catch {}
+}
+
+export default {
+  id: "muta",
+  async setup(ctx) {
+    const home = ctx.location && ctx.location.directory
+    const controller = new AbortController()
+    void (async () => {
+      try {
+        for await (const e of ctx.event.subscribe({ signal: controller.signal })) {
+          if (!/^(session\\.(execution\\.|deleted)|permission\\.(asked|replied))/.test(e.type)) continue
+          const data = e.data || {}
+          const sessionID = data.sessionID || (e.durable && e.durable.aggregateID)
+          put({ type: e.type, sessionID, directory: (e.location && e.location.directory) || home })
+        }
+      } catch {}
+    })()
+    await ctx.tool.hook("execute.before", async (e) => {
+      const edit = /^(edit|write)$/.test(e.tool)
+      put({ type: "tool", tool: e.tool, sessionID: e.sessionID, directory: home, input: edit ? e.input : undefined })
+      // An edit, with a window watching agents edit: a moment for it to show where first.
+      if (edit && holding()) await new Promise((r) => setTimeout(r, ${HOLD_EDIT_S * 1000}))
+    })
+    return () => controller.abort()
+  },
+}
+`
+
+/** The session an agent's event is about. */
+function sessionId(kind, e) {
+  const id = kind === "cursor" ? e.conversation_id : kind === "opencode" ? e.sessionID : kind === "antigravity" ? e.conversationId : e.session_id
+  return typeof id === "string" && id ? id : null
+}
+
+/** The edits in a Codex patch (apply_patch's text): each file it adds or updates, with its added lines (text) and removed ones (old). */
+function patchEdits(patch) {
+  const out = []
+  const re = /\*\*\* (?:Update|Add) File: ([^\n]+)\n([\s\S]*?)(?=\n\*\*\* |$)/g
+  let m
+  while ((m = re.exec(String(patch || "")))) {
+    const lines = m[2].split("\n")
+    const added = lines.filter((l) => l.startsWith("+") && !l.startsWith("+++")).map((l) => l.slice(1))
+    const removed = lines.filter((l) => l.startsWith("-") && !l.startsWith("---")).map((l) => l.slice(1))
+    out.push({ path: m[1].trim(), text: added.join("\n"), old: removed.join("\n") })
+  }
+  return out
+}
+
+/**
+ * What one of each agent's events says: { cwd, turn, waiting, edits }. turn
+ * is "start" (a prompt, or a tool call: still at work), "end" (the turn's
+ * over), "over" (the session is) or null; waiting, that it's waiting on you
+ * to allow something (Claude Code's, Codex's and OpenCode's permission
+ * requests; the next tool, prompt or reply ends it); edits are
+ * [{ path, text, old, after }]: the file, its new text, the text it
+ * replaces (none for a whole file written), and after: the event comes once
+ * the file has changed (Cursor's), not just before.
+ */
+const AGENT_EVENTS = {
+  claude(e) {
+    const event = e.hook_event_name
+    const input = e.tool_input || {}
+    const edit = event === "PreToolUse" && /^(Edit|MultiEdit|Write)$/.test(e.tool_name || "")
+    return {
+      cwd: e.cwd,
+      waiting: event === "PermissionRequest",
+      turn:
+        event === "UserPromptSubmit" || event === "PreToolUse" || event === "PostToolUse" || event === "PermissionRequest"
+          ? "start"
+          : event === "Stop" || event === "StopFailure" || (event === "Notification" && e.notification_type === "idle_prompt")
+            ? "end"
+            : event === "SessionEnd"
+              ? "over"
+              : null,
+      edits: edit
+        ? [
+            {
+              path: input.file_path,
+              text: input.new_string || (input.edits || []).map((x) => x.new_string || "").join("\n") || input.content || "",
+              old: input.old_string || (input.edits || []).map((x) => x.old_string || "").join("\n"),
+            },
+          ]
+        : [],
+    }
+  },
+  codex(e) {
+    const event = e.hook_event_name
+    return {
+      cwd: e.cwd,
+      waiting: event === "PermissionRequest",
+      turn:
+        event === "UserPromptSubmit" || event === "PreToolUse" || event === "PostToolUse" || event === "PermissionRequest"
+          ? "start"
+          : event === "Stop" || event === "Interrupt"
+            ? "end"
+            : event === "SessionEnd"
+              ? "over"
+              : null,
+      edits: event === "PreToolUse" && e.tool_name === "apply_patch" ? patchEdits(e.tool_input && e.tool_input.command) : [],
+    }
+  },
+  opencode(e) {
+    const path = require("path")
+    const input = e.input || {}
+    const file = input.path && (path.isAbsolute(input.path) ? input.path : path.join(e.directory || "", input.path))
+    return {
+      cwd: e.directory,
+      waiting: e.type === "permission.asked",
+      turn:
+        e.type === "session.execution.started" || e.type === "tool" || /^permission\./.test(e.type || "")
+          ? "start"
+          : e.type === "session.deleted"
+            ? "over"
+            : /^session\.execution\./.test(e.type || "")
+              ? "end"
+              : null,
+      edits:
+        e.type === "tool" && /^(edit|write)$/.test(e.tool) && file ? [{ path: file, text: input.newString || input.content || "", old: input.oldString || "" }] : [],
+    }
+  },
+  cursor(e) {
+    const event = e.hook_event_name
+    return {
+      cwd: Array.isArray(e.workspace_roots) ? e.workspace_roots[0] : null,
+      turn: event === "stop" ? "end" : event === "sessionEnd" ? "over" : "start",
+      edits:
+        event === "afterFileEdit" && e.file_path
+          ? [
+              {
+                path: e.file_path,
+                text: (e.edits || []).map((x) => x.new_string || "").join("\n"),
+                old: (e.edits || []).map((x) => x.old_string || "").join("\n"),
+                after: true,
+              },
+            ]
+          : [],
+    }
+  },
+  antigravity(e) {
+    const event = e.hookEventName
+    const call = e.toolCall || {}
+    const args = call.args || {}
+    const edit = event === "PreToolUse" && /^(edit_file|write_file)$/.test(call.name || "") && args.Path
+    return {
+      cwd: e.cwd || (Array.isArray(e.workspacePaths) ? e.workspacePaths[0] : null),
+      turn: event === "PreInvocation" || event === "PreToolUse" ? "start" : event === "Stop" ? "end" : null,
+      edits: edit ? [{ path: args.Path, text: args.Replacement || args.Content || "", old: args.Target || "" }] : [],
+    }
+  },
+}
+
+/**
+ * An agent's session after its event e (at: when, ms; pid: the agent's
+ * process, when known), from session (or none yet):
+ * { id, kind, cwd, pid, working, waiting, ended, edits, at }.
+ */
+function agentEvent(kind, session, e, at, pid) {
+  const s = session
+    ? { ...session, edits: [...session.edits] }
+    : { id: sessionId(kind, e), kind, cwd: null, working: false, waiting: false, ended: false, edits: [], at }
+  s.at = at
+  if (pid > 1) s.pid = pid
+  const said = AGENT_EVENTS[kind](e)
+  if (said.cwd) s.cwd = said.cwd
+  if (said.turn) s.waiting = !!said.waiting
+  if (said.turn === "start") {
+    s.working = true
+    s.ended = false
+  } else if (said.turn === "end") s.working = false
+  else if (said.turn === "over") {
+    s.working = false
+    s.ended = true
+  }
+  // Each edit numbered in its session, so two in the same second stay two.
+  for (const edit of said.edits)
+    if (edit.path) s.edits.push({ path: edit.path, text: edit.text || "", old: edit.old || "", after: !!edit.after, at, n: (s.n = (s.n || 0) + 1) })
+  if (s.edits.length > AGENT_EDITS) s.edits.splice(0, s.edits.length - AGENT_EDITS)
+  return s
+}
+
+/**
+ * Hook settings in Claude Code's shape (Claude Code's settings.json, Codex's
+ * hooks.json) with Muta's hooks in, running command for each of events
+ * (event → matcher, or null), or taken out (command null), found by mark.
+ * Every other hook stays as it is.
+ */
+function withHookGroups(config, command, events, mark) {
+  const next = { ...config, hooks: { ...(config.hooks || {}) } }
+  const ours = (group) => (group.hooks || []).some((h) => String(h.command || "").includes(mark))
+  // Every event, so an earlier version's (PostToolUse, PermissionRequest) go too.
+  for (const event of new Set([...Object.keys(next.hooks), ...Object.keys(events)])) {
+    const groups = (next.hooks[event] || []).filter((g) => !ours(g))
+    if (command && event in events) {
+      const group = { hooks: [{ type: "command", command, timeout: 5 }] }
+      if (events[event]) group.matcher = events[event]
+      groups.push(group)
+    }
+    if (groups.length) next.hooks[event] = groups
+    else delete next.hooks[event]
+  }
+  if (!Object.keys(next.hooks).length) delete next.hooks
+  return next
+}
+
+/** Cursor's hooks.json with Muta's hooks in (running script) or taken out (script null), leaving every other hook. */
+function withCursorHooks(config, script) {
+  const next = { version: 1, ...config, hooks: { ...(config.hooks || {}) } }
+  for (const event of CURSOR_HOOK_EVENTS) {
+    const hooks = (next.hooks[event] || []).filter((h) => !String(h.command || "").includes(CURSOR_HOOK_MARK))
+    if (script) hooks.push({ command: `sh ${script} ${event}` })
+    if (hooks.length) next.hooks[event] = hooks
+    else delete next.hooks[event]
+  }
+  if (!Object.keys(next.hooks).length) delete next.hooks
+  return next
+}
+
+/** Antigravity's hooks.json with Muta's named hook in (running command) or taken out (command null). */
+function withAntigravityHooks(config, command) {
+  const next = { ...config }
+  delete next[ANTIGRAVITY_HOOK_MARK]
+  if (command) {
+    const handler = { type: "command", command, timeout: 5 }
+    next[ANTIGRAVITY_HOOK_MARK] = { PreInvocation: [handler], PreToolUse: [{ matcher: "*", hooks: [handler] }], Stop: [handler] }
+  }
+  return next
+}
+
+/** What turning each agent on in Settings › AI does, and where. */
+const AGENT_HOOKS_SAY = {
+  claude: "Adds Muta's hooks to Claude Code's settings (~/.claude/settings.json), for every project. New sessions use them.",
+  codex: "Adds Muta's hooks to Codex (~/.codex/hooks.json), for every project. Codex runs them once you approve them in its /hooks screen.",
+  opencode: "Adds Muta's plugin to OpenCode 2 (~/.config/opencode/plugins/muta). It loads when OpenCode's background service restarts (opencode service restart).",
+  cursor: "Adds Muta's hooks to Cursor (~/.cursor/hooks.json), for the app and the cursor-agent CLI. New chats use them.",
+  antigravity: "Adds Muta's hooks to Antigravity (~/.gemini/config/hooks.json), for every project. Its CLI runs them.",
+}
 
 class AgentWatch {
   /**
-   * onChange({ kind, name, edit: { file, text, at } | null, all: [{ id, kind }] } | null):
-   * the agent at work in the vault that edited last, with every one at work
-   * (oldest first), or none.
+   * onChange({ all: [{ id, kind, waiting }] } | null): every agent at work
+   * in the vault (oldest first), and whether it's waiting on you, or none.
    */
   constructor(plugin, onChange) {
     this.plugin = plugin
@@ -281,20 +585,24 @@ class AgentWatch {
     this.key = ""
     this.state = null
     this.roots = null
-    // What each session file has said so far, and how far it's been read.
-    this.records = new Map()
-    // When each Antigravity edit was first seen (its records keep no time per step).
-    this.seenAt = new Map()
-    // Claude Code sessions, as its hooks report them (claudeHookEvent()).
-    this.hookSessions = new Map()
+    // Every session heard from, by "<agent>:<id>" (agentEvent()).
+    this.sessions = new Map()
+    // How far each event file has been read: { pos, rest }.
+    this.files = new Map()
     // Edits already reported to onEdit.
     this.editsSeen = new Map()
+    this.checked = new Map()
     this.watchers = []
   }
 
-  /** The user's home folder, where the agents keep their records. */
+  /** The user's home folder, where the agents keep their settings and Muta its events. */
   homeDir() {
     return require("os").homedir()
+  }
+
+  /** A path in ~/.muta. */
+  dir(...parts) {
+    return require("path").join(this.homeDir(), MUTA_DIR, ...parts)
   }
 
   start() {
@@ -309,236 +617,270 @@ class AgentWatch {
     this.timer = null
     for (const w of this.watchers) w.close()
     this.watchers = []
+    this.markRunning(false)
     this.set(null)
   }
 
   /**
-   * Checks again the moment any agent's records change: Claude Code's hook
-   * events (~/.muta), Codex's sessions, OpenCode's and Antigravity's
-   * databases. The timer stays, in case a watch misses something.
+   * Touches this vault's mark in ~/.muta/running (on) or takes it away: the
+   * hook scripts pass events on only while a mark is fresh. Says whether
+   * none was, before.
    */
-  watch() {
+  markRunning(on) {
     const fs = require("fs")
     const path = require("path")
-    const home = this.homeDir()
-    fs.mkdirSync(path.join(home, MUTA_DIR), { recursive: true })
-    const soon = () => {
-      window.clearTimeout(this.soon)
-      this.soon = window.setTimeout(() => this.poll(), 60)
-    }
-    for (const [dir, recursive] of [
-      [path.join(home, MUTA_DIR), false],
-      [path.join(home, ".claude", "projects"), true],
-      [path.join(home, ".codex", "sessions"), true],
-      [path.join(home, ".local", "share", "opencode"), false],
-      [path.join(home, ".gemini", "antigravity-cli"), false],
-    ])
+    const dir = this.dir("running")
+    const base = this.plugin.app.vault.adapter.getBasePath()
+    const id = require("crypto").createHash("sha1").update(base).digest("hex").slice(0, 12)
+    const mine = path.join(dir, id)
+    // Watching agents edit: a mark of its own, so the scripts hold an edit a moment for it.
+    const hold = this.dir("hold", id)
+    if (!on || !this.plugin.settings.agentEditView) fs.rmSync(hold, { force: true })
+    if (!on) {
+      // Lapses in a minute rather than at once, so a reload carries on where it was.
+      const soon = new Date(Date.now() - (RUNNING_MIN - 1) * 60000)
       try {
-        this.watchers.push(fs.watch(dir, { recursive, persistent: false }, soon))
-      } catch {} // not installed
+        fs.utimesSync(mine, soon, soon)
+      } catch {}
+      return false
+    }
+    let fresh = false
+    try {
+      for (const f of fs.readdirSync(dir)) if (Date.now() - fs.statSync(path.join(dir, f)).mtimeMs < RUNNING_MIN * 60000) fresh = true
+    } catch {}
+    try {
+      fs.mkdirSync(dir, { recursive: true })
+      const now = new Date()
+      for (const mark of this.plugin.settings.agentEditView ? [mine, hold] : [mine]) {
+        fs.mkdirSync(path.dirname(mark), { recursive: true })
+        if (fs.existsSync(mark)) fs.utimesSync(mark, now, now)
+        else fs.writeFileSync(mark, base)
+      }
+    } catch {}
+    return !fresh
   }
 
-  // ── Claude Code's hooks ──────────────────────────────────────────────
-
-  claudeSettingsPath() {
-    return require("path").join(this.homeDir(), ".claude", "settings.json")
+  /** Checks again the moment an event comes in; the timer stays, in case the watch misses one. */
+  watch() {
+    const fs = require("fs")
+    const dir = this.dir("events")
+    try {
+      fs.mkdirSync(dir, { recursive: true })
+      this.watchers.push(
+        fs.watch(dir, { persistent: false }, () => {
+          window.clearTimeout(this.soon)
+          this.soon = window.setTimeout(() => this.poll(), 15)
+        })
+      )
+    } catch {}
   }
 
-  /** Whether Muta's hooks are in Claude Code's settings (checked every few seconds at most). */
-  hooksInstalled(now = Date.now()) {
-    if (this.hooksChecked && now - this.hooksChecked.at < 5000) return this.hooksChecked.on
+  // ── Each agent's hooks ──────────────────────────────────────────────
+
+  /** The file Muta's hooks (or plugin) for agent kind go in. */
+  hookFile(kind) {
+    const path = require("path")
+    const home = this.homeDir()
+    return {
+      claude: path.join(home, ".claude", "settings.json"),
+      codex: path.join(home, ".codex", "hooks.json"),
+      opencode: path.join(home, ".config", "opencode", "plugins", "muta", "index.js"),
+      cursor: path.join(home, ".cursor", "hooks.json"),
+      antigravity: path.join(home, ".gemini", "config", "hooks.json"),
+    }[kind]
+  }
+
+  /** Whether Muta's hooks for agent kind are in (checked every few seconds at most). */
+  installed(kind, now = Date.now()) {
+    const was = this.checked.get(kind)
+    if (was && now - was.at < 5000) return was.on
+    const mark = { claude: HOOK_MARK, codex: CODEX_HOOK_MARK, opencode: OPENCODE_PLUGIN_MARK, cursor: CURSOR_HOOK_MARK, antigravity: ANTIGRAVITY_HOOK_MARK }[kind]
     let on = false
     try {
-      on = require("fs").readFileSync(this.claudeSettingsPath(), "utf8").includes(HOOK_MARK)
+      on = require("fs").readFileSync(this.hookFile(kind), "utf8").includes(mark)
     } catch {}
-    this.hooksChecked = { at: now, on }
+    this.checked.set(kind, { at: now, on })
     return on
   }
 
-  /** Puts Muta's hooks into Claude Code's settings (and its scripts into ~/.muta), or takes them out. */
-  setHooks(on) {
+  /** The agents whose hooks are in. */
+  watched() {
+    return AGENTS.filter((kind) => this.installed(kind))
+  }
+
+  /** Puts Muta's hooks for agent kind in (and its script into ~/.muta), or takes them out. */
+  setHooks(kind, on) {
+    const fs = require("fs")
     const path = require("path")
-    const dir = path.join(this.homeDir(), MUTA_DIR)
-    const events = path.join(dir, "claude-hook.sh")
-    const question = path.join(dir, "claude-question.sh")
-    if (on) {
-      writeScript(events, HOOK_SCRIPT)
-      writeScript(question, QUESTION_SCRIPT)
-    }
-    // The permission script of an earlier version: gone.
-    require("fs").rmSync(path.join(dir, "claude-permission.sh"), { force: true })
-    editJson(this.claudeSettingsPath(), "Claude Code's settings.json", (settings) =>
-      withHooks(settings, on ? `sh "${events}" # ${HOOK_MARK}` : null, on ? `sh "${question}" # ${HOOK_MARK}` : null)
-    )
-    this.hooksChecked = null
-  }
-
-  cursorHooksPath() {
-    return require("path").join(this.homeDir(), ".cursor", "hooks.json")
-  }
-
-  /** Whether Muta's hooks are in Cursor's hooks.json. */
-  cursorHooksInstalled() {
-    try {
-      return require("fs").readFileSync(this.cursorHooksPath(), "utf8").includes(CURSOR_HOOK_MARK)
-    } catch {
-      return false
-    }
-  }
-
-  /** Puts Muta's hooks into Cursor's hooks.json (and its script into ~/.muta), or takes them out. */
-  setCursorHooks(on) {
-    const path = require("path")
-    // The mark is in the script's name: Cursor may run the command without a shell, so no comment.
-    const script = path.join(this.homeDir(), MUTA_DIR, `${CURSOR_HOOK_MARK}.sh`)
-    if (on) writeScript(script, CURSOR_SCRIPT)
-    editJson(this.cursorHooksPath(), "Cursor's hooks.json", (config) => withCursorHooks(config, on ? script : null))
+    const file = this.hookFile(kind)
+    // Claude Code's script keeps its name: sessions already running call it.
+    const script = this.dir(kind === "claude" ? "claude-hook.sh" : `muta-${kind}-hook.sh`)
+    if (on && kind !== "opencode") writeScript(script, hookScript(kind))
+    if (kind === "claude")
+      editJson(file, "Claude Code's settings.json", (c) => withHookGroups(c, on ? `sh "${script}" # ${HOOK_MARK}` : null, CLAUDE_HOOKS, HOOK_MARK))
+    else if (kind === "codex") editJson(file, "Codex's hooks.json", (c) => withHookGroups(c, on ? `sh "${script}"` : null, CODEX_HOOKS, CODEX_HOOK_MARK))
+    // Cursor may run the command without a shell: the mark is in the script's name.
+    else if (kind === "cursor") editJson(file, "Cursor's hooks.json", (c) => withCursorHooks(c, on ? script : null))
+    else if (kind === "antigravity") editJson(file, "Antigravity's hooks.json", (c) => withAntigravityHooks(c, on ? `sh "${script}"` : null))
+    else if (on) writeScript(file, OPENCODE_PLUGIN)
+    else fs.rmSync(path.dirname(file), { recursive: true, force: true })
+    this.checked.delete(kind)
   }
 
   /**
-   * Answers a question from the window: answers maps each question's text to
-   * the chosen label (or labels, or typed text); "skip" lets the script stop
-   * waiting (answered in the terminal).
+   * Brings Muta's hooks up to date for every agent they're in, and clears
+   * away an earlier version's: its event files, the question script (made
+   * to do nothing, as sessions already running still call it) and answers.
    */
-  answer(ask, answers) {
-    if (!/^[\w-]+$/.test(ask)) return
+  upgrade() {
     const fs = require("fs")
-    const path = require("path")
-    let questions = []
-    for (const session of this.hookSessions.values())
-      if (session.attention && session.attention.ask === ask) questions = session.attention.questions
-    const text = answers === "skip" ? "skip" : JSON.stringify(questionAnswer(questions, answers))
-    const dir = path.join(this.homeDir(), MUTA_DIR, "answers")
-    try {
-      fs.mkdirSync(dir, { recursive: true })
-      fs.writeFileSync(path.join(dir, ask), text)
-    } catch {}
-    // Answered: no longer waiting on the user (until the session says otherwise).
-    for (const [id, session] of this.hookSessions)
-      if (session.attention && session.attention.ask === ask) this.hookSessions.set(id, { ...session, attention: null })
-    if (answers !== "skip") this.poll()
-  }
-
-  /** Reads the hook events (Claude Code's and Cursor's) written since last time. */
-  readHookEvents() {
-    for (const e of this.takeEvents("claude-events.jsonl")) {
-      const id = e.hook && e.hook.session_id
-      if (!id) continue
-      const before = this.hookSessions.get(id)
-      const after = claudeHookEvent(before, { ...e.hook, muta_ask: e.ask }, e.at || Date.now())
-      this.hookSessions.set(id, after)
-      // A question answered in the terminal: its hook script can stop waiting for the window.
-      const was = before && before.attention && before.attention.ask
-      if (was && (!after.attention || after.attention.ask !== was)) this.answer(was, "skip")
-    }
-    for (const e of this.takeEvents("cursor-events.jsonl")) {
-      const id = e.cursor && e.cursor.conversation_id
-      if (!id) continue
-      const key = `cursor:${id}`
-      this.hookSessions.set(key, cursorHookEvent(this.hookSessions.get(key), e.cursor, e.at || Date.now()))
-    }
-  }
-
-  /** The lines of ~/.muta/<name> as JSON, taking the file away first, so none are read twice or lost. */
-  takeEvents(name) {
-    const fs = require("fs")
-    const path = require("path")
-    const file = path.join(this.homeDir(), MUTA_DIR, name)
-    const taken = file + ".reading"
-    try {
-      fs.renameSync(file, taken)
-    } catch {
-      return []
-    }
-    let text = ""
-    try {
-      text = fs.readFileSync(taken, "utf8")
-    } finally {
-      fs.rmSync(taken, { force: true })
-    }
-    const out = []
-    for (const line of text.split("\n"))
+    for (const kind of AGENTS)
       try {
-        if (line) out.push(JSON.parse(line))
-      } catch {}
-    return out
+        this.checked.delete(kind)
+        if (this.installed(kind)) this.setHooks(kind, true)
+      } catch (error) {
+        console.error(`Muta: updating ${AGENT_NAMES[kind]}'s hooks`, error)
+      }
+    for (const old of ["claude-events.jsonl", "cursor-events.jsonl", "claude-events.jsonl.reading", "cursor-events.jsonl.reading", "answers", "claude-permission.sh"])
+      fs.rmSync(this.dir(old), { recursive: true, force: true })
+    if (fs.existsSync(this.dir("claude-question.sh"))) writeScript(this.dir("claude-question.sh"), "#!/bin/sh\nexit 0\n")
   }
 
-  /**
-   * Claude Code's sessions: from its hooks when they're in, and from its
-   * session files for any the hooks haven't heard from (sessions started
-   * before the hooks were added don't run them).
-   */
-  claudeSessions(now) {
-    if (!this.hooksInstalled(now)) return this.claude(now)
-    const hooked = this.fromHooks(now, "claude")
-    const known = new Set(this.hookSessions.keys())
+  // ── Reading the events ──────────────────────────────────────────────
+
+  /** Reads the events written since last time into the sessions, deleting old event files. */
+  readEvents(now) {
+    const fs = require("fs")
     const path = require("path")
-    return [...hooked, ...this.claude(now).filter((x) => !known.has(path.basename(x.id, ".jsonl")))]
-  }
-
-  /** The sessions of agent kind heard from through hooks: those not over and heard from lately. */
-  fromHooks(now, kind) {
-    const out = []
-    for (const [id, session] of this.hookSessions) {
-      if (session.kind !== kind) continue
-      if (session.ended || now - session.at > HOOK_STALE_MS) {
-        if (now - session.at > AGENT_EDIT_MS) this.hookSessions.delete(id)
+    const dir = this.dir("events")
+    let names = []
+    try {
+      names = fs.readdirSync(dir)
+    } catch {
+      return
+    }
+    const on = new Set(this.watched())
+    // In order, so a session's events across midnight are read in turn.
+    for (const name of names.sort((a, b) => a.slice(a.indexOf("-")).localeCompare(b.slice(b.indexOf("-"))) || a.localeCompare(b))) {
+      const m = name.match(/^([a-z]+)-\d{4}-\d{2}-\d{2}\.jsonl$/)
+      if (!m || !AGENT_EVENTS[m[1]]) continue
+      const kind = m[1]
+      const file = path.join(dir, name)
+      let size
+      try {
+        const st = fs.statSync(file)
+        if (now - st.mtimeMs > EVENT_KEEP_DAYS * 86400000) {
+          fs.rmSync(file, { force: true })
+          this.files.delete(file)
+          continue
+        }
+        size = st.size
+      } catch {
         continue
       }
-      out.push(session)
+      const lines = this.newLines(file, size)
+      if (!on.has(kind)) continue
+      for (const line of lines) {
+        let d
+        try {
+          d = JSON.parse(line)
+        } catch {
+          continue
+        }
+        const e = d && d.event
+        const id = e && sessionId(kind, e)
+        if (!id) continue
+        const key = `${kind}:${id}`
+        this.sessions.set(key, agentEvent(kind, this.sessions.get(key), e, d.at || now, d.pid))
+      }
     }
-    return out
+  }
+
+  /** The lines added to event file (size bytes now) since it was last read; the first time, the last EVENT_TAIL bytes'. */
+  newLines(file, size) {
+    const fs = require("fs")
+    let rec = this.files.get(file)
+    if (!rec || size < rec.pos) {
+      rec = { pos: Math.max(0, size - EVENT_TAIL), rest: "" }
+      // Started mid-line: the first, cut off, is dropped.
+      if (rec.pos > 0) rec.rest = false
+      this.files.set(file, rec)
+    }
+    if (size <= rec.pos) return []
+    const fd = fs.openSync(file, "r")
+    let text = ""
+    try {
+      const buf = Buffer.alloc(size - rec.pos)
+      fs.readSync(fd, buf, 0, buf.length, rec.pos)
+      text = buf.toString("utf8")
+    } finally {
+      fs.closeSync(fd)
+    }
+    rec.pos = size
+    const lines = ((rec.rest || "") + text).split("\n")
+    const cut = rec.rest === false
+    rec.rest = lines.pop()
+    if (cut) lines.shift()
+    return lines.filter(Boolean)
+  }
+
+  /** Whether process pid is still running. */
+  alive(pid) {
+    try {
+      process.kill(pid, 0)
+      return true
+    } catch (error) {
+      return error.code === "EPERM"
+    }
   }
 
   set(state) {
-    const key = state ? state.all.map((a) => `${a.id}${a.attention ? "!" + a.attention.message : ""}`).join(",") : ""
+    const key = state ? state.all.map((a) => `${a.id}${a.waiting ? "?" : ""}`).join(",") : ""
     if (key === this.key) return
     this.key = key
     this.state = state
     this.onChange(state)
   }
 
-  async poll() {
+  poll() {
     if (this.busy) return
     this.busy = true
     try {
       const now = Date.now()
       if (!this.roots || now - this.roots.at > 30000) this.roots = this.vaultRoots()
-      const s = this.plugin.settings
-      this.readHookEvents()
-      const sessions = [
-        ...(s.agentClaude ? this.claudeSessions(now) : []),
-        ...(s.agentCursor ? this.fromHooks(now, "cursor") : []),
-        ...(s.agentCodex ? this.codex(now) : []),
-        ...(s.agentOpencode ? await this.opencode(now) : []),
-        ...(s.agentAntigravity ? await this.antigravity(now) : []),
-      ]
-      // Stopped while the databases were being read: it stays stopped.
-      if (!this.timer) return
-      let best = null
+      // No Muta was running for a while (not started, or this one's timer
+      // held back): the scripts let events by, a turn's end among them, so
+      // the sessions read so far are taken as stopped until they're heard from.
+      const missed = this.markRunning(true)
+      this.readEvents(now)
+      if (missed) for (const [key, s] of this.sessions) this.sessions.set(key, { ...s, working: false, waiting: false })
+      const on = new Set(this.watched())
       const all = []
-      for (const session of sessions) {
+      for (const [key, session] of this.sessions) {
+        if (!on.has(session.kind)) continue
         this.reportEdits(session, now)
+        // Its process is gone (crashed, killed, or quit without ending the turn): over.
+        if (session.working && session.pid && !this.alive(session.pid)) {
+          this.sessions.set(key, { ...session, working: false, waiting: false, ended: true })
+          continue
+        }
+        // Quiet a long while: stopped, unless it's waiting on you (it says nothing until you answer).
+        const quiet = now - session.at > HOOK_STALE_MS && !(session.waiting && session.pid)
+        if (session.ended || quiet) {
+          if (session.ended || now - session.at > AGENT_EDIT_MS) this.sessions.delete(key)
+          continue
+        }
         if (!session.working) continue
-        const edits = session.edits
-          .filter((e) => now - e.at < AGENT_EDIT_MS)
-          .map((e) => ({ ...e, file: this.toVault(e.path) }))
-          .filter((e) => e.file)
-          .sort((a, b) => b.at - a.at)
-        if (!edits.length && !this.inVault(session.cwd)) continue
-        const found = { kind: session.kind, name: AGENT_NAMES[session.kind], at: session.at, edit: edits[0] || null }
-        all.push({ id: `${session.kind}:${session.id}`, kind: session.kind, attention: session.attention || null })
-        const when = (x) => (x.edit ? x.edit.at : x.at)
-        if (!best || when(found) > when(best)) best = found
+        const edited = session.edits.some((e) => now - e.at < AGENT_EDIT_MS && this.toVault(e.path))
+        if (!edited && !this.inVault(session.cwd)) continue
+        all.push({ id: key, kind: session.kind, waiting: !!session.waiting })
       }
       // In the order each was first seen at work, so their beams keep their places.
       const seen = (this.firstSeen = this.firstSeen || new Map())
       for (const a of all) if (!seen.has(a.id)) seen.set(a.id, now)
       for (const id of seen.keys()) if (!all.some((a) => a.id === id)) seen.delete(id)
       all.sort((a, b) => seen.get(a.id) - seen.get(b.id))
-      this.set(best && { ...best, all })
-      this.prune(now)
+      this.set(all.length ? { all } : null)
     } catch (error) {
       console.error("Muta: checking for agents", error)
     } finally {
@@ -550,16 +892,20 @@ class AgentWatch {
   reportEdits(session, now) {
     for (const e of session.edits) {
       if (now - e.at > AGENT_EDIT_MS) continue
-      const key = `${session.kind}|${e.path}|${e.at}|${(e.text || "").length}`
+      const key = `${session.kind}:${session.id}:${e.n}`
       if (this.editsSeen.has(key)) continue
       this.editsSeen.set(key, now)
       const file = this.toVault(e.path)
-      if (file && this.onEdit) this.onEdit({ kind: session.kind, file, text: e.text || "", at: e.at })
+      if (file && this.onEdit) this.onEdit({ kind: session.kind, file, text: e.text, old: e.old, after: e.after, at: e.at })
     }
     for (const [key, at] of this.editsSeen) if (now - at > AGENT_EDIT_MS) this.editsSeen.delete(key)
   }
 
-  /** The vault's folder, and the folders and files it links to from elsewhere (two levels deep). */
+  /**
+   * The vault's folder, the folders and files it links to from elsewhere (two
+   * levels deep), and the projects those are in (the git repositories holding
+   * them, once each).
+   */
   vaultRoots() {
     const fs = require("fs")
     const path = require("path")
@@ -586,15 +932,27 @@ class AgentWatch {
     try {
       real = fs.realpathSync(base)
     } catch {}
-    return { at: Date.now(), real, links }
+    // Not a repository round the whole home folder (dotfiles kept in git): every agent would count.
+    const home = this.realpath(this.homeDir())
+    const projects = [...new Set(links.map(([, target]) => gitRoot(target)).filter((p) => p && !within(home, p)))]
+    return { at: Date.now(), real, links, projects }
   }
 
-  /** Whether folder cwd is inside the vault (or a folder it links to). */
+  /** The projects the vault links into, when agents working in them count (Settings › AI). */
+  projects() {
+    return this.plugin.settings.agentLinkedProjects ? this.roots.projects : []
+  }
+
+  /** Whether folder cwd is inside the vault (or a folder it links to, or with the setting on, a project it links into). */
   inVault(cwd) {
     if (!cwd) return false
     const real = this.realpath(cwd)
     const { roots } = this
-    return within(real, roots.real) || roots.links.some(([, target]) => within(real, target))
+    return (
+      within(real, roots.real) ||
+      roots.links.some(([, target]) => within(real, target)) ||
+      this.projects().some((p) => within(real, p))
+    )
   }
 
   /** The vault's Markdown note at file path p, or null. */
@@ -621,397 +979,6 @@ class AgentWatch {
       return p
     }
   }
-
-  /**
-   * The session record file f keeps: { kind, cwd, edits, working }, made by
-   * init and brought up to date by passing read(line, session) each line
-   * written since the last poll (the first time, the last AGENT_TAIL bytes'),
-   * so a long session isn't read again every poll.
-   */
-  session(f, at, init, read) {
-    const fs = require("fs")
-    let rec = this.records.get(f)
-    const fd = fs.openSync(f, "r")
-    try {
-      const size = fs.fstatSync(fd).size
-      if (!rec || size < rec.pos) {
-        rec = { pos: Math.max(0, size - AGENT_TAIL), rest: null, session: init() }
-        // Started mid-line: the first, cut off, is dropped.
-        if (rec.pos > 0) rec.rest = false
-        this.records.set(f, rec)
-      }
-      if (size > rec.pos) {
-        const buf = Buffer.alloc(size - rec.pos)
-        fs.readSync(fd, buf, 0, buf.length, rec.pos)
-        rec.pos = size
-        const text = buf.toString("utf8")
-        const lines = ((rec.rest || "") + text).split("\n")
-        const cut = rec.rest === false
-        rec.rest = lines.pop()
-        if (cut) lines.shift()
-        for (const line of lines) if (line) read(line, rec.session)
-        const { edits } = rec.session
-        if (edits.length > AGENT_EDITS) edits.splice(0, edits.length - AGENT_EDITS)
-      }
-    } finally {
-      fs.closeSync(fd)
-    }
-    rec.seen = Date.now()
-    return { ...rec.session, id: f, at, edits: [...rec.session.edits] }
-  }
-
-  /** Forgets the files no session check has asked about for a while. */
-  prune(now) {
-    for (const [f, rec] of this.records) if (now - rec.seen > AGENT_STALE_MS) this.records.delete(f)
-  }
-
-  /** Session files under dir (and its folders, depth deep) written to in the last AGENT_STALE_MS. */
-  recent(dir, now, test, depth = 0) {
-    const fs = require("fs")
-    const path = require("path")
-    const out = []
-    let entries = []
-    try {
-      entries = fs.readdirSync(dir, { withFileTypes: true })
-    } catch {
-      return out
-    }
-    // Only session files are looked at (a folder can hold thousands of others).
-    for (const entry of entries) {
-      const full = path.join(dir, entry.name)
-      try {
-        if (entry.isDirectory()) {
-          if (depth > 0) out.push(...this.recent(full, now, test, depth - 1))
-        } else if (test(entry.name)) {
-          const at = fs.statSync(full).mtimeMs
-          if (now - at < AGENT_STALE_MS) out.push({ file: full, at })
-        }
-      } catch {}
-    }
-    return out
-  }
-
-  /** Claude Code: its project folders named after the vault, a folder in it or one around it. */
-  claude(now) {
-    const path = require("path")
-    const fs = require("fs")
-    const dir = path.join(this.homeDir(), ".claude", "projects")
-    const name = (p) => p.replace(/[^a-zA-Z0-9]/g, "-")
-    const roots = [this.roots.real, ...this.roots.links.map(([, target]) => target)].map(name)
-    let folders = []
-    try {
-      folders = fs.readdirSync(dir).filter((f) => roots.some((r) => f.startsWith(r) || r.startsWith(f + "-")))
-    } catch {
-      return []
-    }
-    const sessions = []
-    for (const folder of folders)
-      for (const { file, at } of this.recent(path.join(dir, folder), now, (n) => n.endsWith(".jsonl"))) {
-        const init = () => ({ kind: "claude", cwd: null, edits: [], working: null })
-        const session = this.session(file, at, init, (line, session) => {
-          if (!/"type":"(user|assistant|system)"/.test(line)) return
-          let d
-          try {
-            d = JSON.parse(line)
-          } catch {
-            return
-          }
-          // Only the conversation's own lines (not the requests Claude Code also keeps there).
-          if (!/^(user|assistant|system)$/.test(d.type)) return
-          if (d.cwd) session.cwd = d.cwd
-          if (!d.isSidechain) session.working = this.claudeWorking(d, session.working)
-          const content = d.message && Array.isArray(d.message.content) ? d.message.content : []
-          for (const c of content) {
-            if (c.type !== "tool_use" || !c.input || !/^(Edit|MultiEdit|Write)$/.test(c.name)) continue
-            const input = c.input
-            const text = input.new_string || (input.edits && input.edits[0] && input.edits[0].new_string) || input.content || ""
-            session.edits.push({ path: input.file_path, text, at: Date.parse(d.timestamp) || at })
-          }
-        })
-        if (session.working === null) session.working = now - at < AGENT_ACTIVE_MS
-        sessions.push(session)
-      }
-    return sessions
-  }
-
-  /**
-   * Whether a Claude Code session is mid-turn after record d (was: before it).
-   * A prompt or a tool's result starts or continues a turn; a reply that ends
-   * the turn, the hooks that run when it stops, or an interruption end it.
-   */
-  claudeWorking(d, was) {
-    const m = d.message || {}
-    if (d.type === "system") return d.subtype === "stop_hook_summary" || d.subtype === "turn_duration" ? false : was
-    if (d.type === "assistant") return m.stop_reason === "tool_use" || !m.stop_reason ? true : false
-    if (d.type !== "user" || d.isMeta) return was
-    const content = typeof m.content === "string" ? m.content : Array.isArray(m.content) ? m.content.map((c) => c.text || "").join("") : ""
-    // Interrupted, or a command Claude Code ran itself (/compact, /clear): no turn follows.
-    return !/^(\[Request interrupted|<command-name>|<local-command)/.test(content.trim())
-  }
-
-  /** Codex: today's and yesterday's sessions, with the files their patches add or update. */
-  codex(now) {
-    const path = require("path")
-    const base = path.join(this.homeDir(), ".codex", "sessions")
-    const day = (t) => {
-      const d = new Date(t)
-      return path.join(base, String(d.getFullYear()), String(d.getMonth() + 1).padStart(2, "0"), String(d.getDate()).padStart(2, "0"))
-    }
-    const files = [...new Set([day(now), day(now - 86400000)])].flatMap((dir) =>
-      this.recent(dir, now, (n) => n.startsWith("rollout-") && n.endsWith(".jsonl"))
-    )
-    const sessions = []
-    for (const { file, at } of files) {
-      const init = () => ({ kind: "codex", cwd: this.codexCwd(file), edits: [], working: null })
-      const session = this.session(file, at, init, (line, session) => {
-        // A turn starts with task_started and ends with task_complete (or turn_aborted).
-        const turn = line.match(/"payload":\{"type":"(task_started|task_complete|turn_aborted)"/)
-        if (turn) session.working = turn[1] === "task_started"
-        if (!line.includes("File: ")) return
-        let d
-        try {
-          d = JSON.parse(line)
-        } catch {
-          return
-        }
-        const p = d.payload || {}
-        const call = typeof p.input === "string" ? p.input : typeof p.arguments === "string" ? p.arguments : ""
-        // The patch may be inside a script, still escaped: undo that first.
-        const patch = call.includes("\\n") ? call.replace(/\\n/g, "\n").replace(/\\"/g, '"') : call
-        const re = /\*\*\* (?:Update|Add) File: ([^\n]+)\n([\s\S]*?)(?=\n\*\*\* |$)/g
-        let m
-        while ((m = re.exec(patch))) {
-          const added = m[2].split("\n").filter((l) => l.startsWith("+") && !l.startsWith("+++")).map((l) => l.slice(1))
-          session.edits.push({ path: m[1].trim(), text: added.join("\n"), at: Date.parse(d.timestamp) || at })
-        }
-      })
-      if (session.working === null) session.working = now - at < AGENT_ACTIVE_MS
-      sessions.push(session)
-    }
-    return sessions
-  }
-
-  /** The folder a Codex session runs in, from its first line. */
-  codexCwd(file) {
-    const fs = require("fs")
-    try {
-      const fd = fs.openSync(file, "r")
-      const buf = Buffer.alloc(16384)
-      const n = fs.readSync(fd, buf, 0, buf.length, 0)
-      fs.closeSync(fd)
-      const m = buf.toString("utf8", 0, n).match(/"cwd":"((?:[^"\\]|\\.)*)"/)
-      return m ? JSON.parse(`"${m[1]}"`) : null
-    } catch {
-      return null
-    }
-  }
-
-  /** OpenCode: its database, through macOS's sqlite3 (OpenCode 2's tables, or the ones before them). */
-  async opencode(now) {
-    const path = require("path")
-    const db = path.join(this.homeDir(), ".local", "share", "opencode", "opencode.db")
-    if (!require("fs").existsSync(db)) return []
-    const query = (sql) => this.sqlite(db, sql)
-    const v2 = await query("select name from sqlite_master where type = 'table' and name = 'session_v2'")
-    if (v2.length) return this.opencode2(now, query)
-    const rows = await query(`select id, directory, time_updated from session where time_updated > ${Math.floor(now - AGENT_STALE_MS)}`)
-    const sessions = []
-    for (const row of rows) {
-      if (!/^[\w-]+$/.test(row.id)) continue
-      // Mid-turn while its latest message is the prompt, or a reply not yet finished or ending in tool calls.
-      const [last] = await query(`select data from message where session_id = '${row.id}' order by time_created desc limit 1`)
-      let working = false
-      try {
-        const m = JSON.parse(last.data)
-        working = m.role === "user" || !(m.time && m.time.completed) || m.finish === "tool-calls"
-      } catch {}
-      const session = { id: row.id, kind: "opencode", cwd: row.directory, at: row.time_updated, edits: [], working }
-      const parts = await query(
-        `select data, time_updated from part where session_id = '${row.id}' and data like '%"filePath"%' order by time_updated desc limit 10`
-      )
-      for (const part of parts) {
-        try {
-          const d = JSON.parse(part.data)
-          const input = d.state && d.state.input
-          if (d.type === "tool" && /^(edit|write)$/.test(d.tool) && input && input.filePath)
-            session.edits.push({ path: input.filePath, text: input.newString || input.content || "", at: part.time_updated })
-        } catch {}
-      }
-      sessions.push(session)
-    }
-    return sessions
-  }
-
-  /**
-   * OpenCode 2: its sessions mark when a turn started (time_busy) and ended
-   * (time_idle); its messages hold the tool calls, edits among them.
-   */
-  async opencode2(now, query) {
-    const rows = await query(
-      `select id, directory, time_updated, time_busy, time_idle from session_v2 where time_updated > ${Math.floor(now - AGENT_STALE_MS)}`
-    )
-    const sessions = []
-    for (const row of rows) {
-      if (!/^[\w-]+$/.test(row.id)) continue
-      const working = !!row.time_busy && !(row.time_idle >= row.time_busy)
-      const session = { id: row.id, kind: "opencode", cwd: row.directory, at: row.time_updated, edits: [], working }
-      const messages = await query(
-        `select data, time_updated from session_message where session_id = '${row.id}' and type = 'assistant' ` +
-          `and (data like '%"name":"edit"%' or data like '%"name":"write"%') order by seq desc limit 10`
-      )
-      for (const message of messages) {
-        try {
-          for (const c of JSON.parse(message.data).content || []) {
-            const input = c.state && c.state.input
-            const path = input && (input.path || input.filePath)
-            if (c.type !== "tool" || !/^(edit|write)$/.test(c.name) || !path) continue
-            const at = (c.time && (c.time.completed || c.time.created)) || message.time_updated
-            session.edits.push({ path, text: input.newString || input.content || "", at })
-          }
-        } catch {}
-      }
-      sessions.push(session)
-    }
-    return sessions
-  }
-
-  /**
-   * Antigravity: its conversations' summaries say which are running and in
-   * which folder (CASCADE_RUN_STATUS_RUNNING, or not_fully_idle while tasks
-   * it started in the background still run); each conversation's steps hold
-   * the files it wrote, as {"Path": …, "Content": …} in their protobufs.
-   * Its CLI keeps them in ~/.gemini/antigravity-cli; the app, if it keeps the
-   * same, in ~/.gemini/antigravity.
-   */
-  async antigravity(now) {
-    const path = require("path")
-    const fs = require("fs")
-    const sessions = []
-    for (const name of ["antigravity-cli", "antigravity"]) {
-      const dir = path.join(this.homeDir(), ".gemini", name)
-      const db = path.join(dir, "conversation_summaries.db")
-      if (!fs.existsSync(db)) continue
-      const rows = await this.sqlite(
-        db,
-        "select conversation_id, workspace_uris, last_modified_time from conversation_summaries " +
-          "where status = 'CASCADE_RUN_STATUS_RUNNING' or not_fully_idle"
-      )
-      for (const row of rows) {
-        const id = row.conversation_id
-        const at = Date.parse(String(row.last_modified_time).replace(" ", "T").replace(/(\.\d{3})\d*/, "$1"))
-        if (!/^[\w-]+$/.test(id) || !(now - at < AGENT_STALE_MS)) continue
-        let cwd = null
-        try {
-          const uri = JSON.parse(row.workspace_uris)[0]
-          if (uri && uri.startsWith("file://")) cwd = decodeURIComponent(uri.slice(7))
-        } catch {}
-        const session = { id, kind: "antigravity", cwd, at, edits: [], working: true }
-        const steps = await this.sqlite(
-          path.join(dir, "conversations", `${id}.db`),
-          "select idx, hex(step_payload) as hex from steps " +
-            `where cast(step_payload as text) like '%"Path":"%' or cast(step_payload as text) like '%"TargetFile":"%' ` +
-            "order by idx desc limit 10"
-        )
-        for (const step of steps) {
-          const text = Buffer.from(step.hex || "", "hex").toString("utf8")
-          const m = text.match(/\{[^{}]*"(?:Path|TargetFile)":"(?:[^"\\]|\\.)*"[^{}]*\}/)
-          if (!m) continue
-          let input
-          try {
-            input = JSON.parse(m[0])
-          } catch {
-            continue
-          }
-          const key = `${id}|${step.idx}`
-          if (!this.seenAt.has(key)) this.seenAt.set(key, now)
-          const content = input.Content || input.ReplacementContent || input.CodeContent || ""
-          session.edits.push({ path: input.Path || input.TargetFile, text: content.replace(/^\n+/, ""), at: this.seenAt.get(key) })
-        }
-        sessions.push(session)
-      }
-    }
-    return sessions
-  }
-
-  /** The rows sqlite3 (macOS's own) finds for query sql in database db, read-only; none on any error. */
-  sqlite(db, sql) {
-    return new Promise((resolve) =>
-      require("child_process").execFile("/usr/bin/sqlite3", ["-readonly", "-json", db, sql], { timeout: 1000 }, (err, out) => {
-        try {
-          resolve(err || !out.trim() ? [] : JSON.parse(out))
-        } catch {
-          resolve([])
-        }
-      })
-    )
-  }
-}
-
-/**
- * A Claude Code session after hook event hook (at: when, ms), from session
- * (or none yet). A prompt or a tool starts or continues a turn; Stop ends it;
- * SessionEnd ends the session. A question (AskUserQuestion, through the
- * PermissionRequest hook) needs the user until the next tool or prompt.
- * Edits (Edit, MultiEdit, Write) say which files, and what's new.
- */
-function claudeHookEvent(session, hook, at) {
-  const s = session
-    ? { ...session, edits: [...session.edits] }
-    : { id: hook.session_id, kind: "claude", cwd: null, working: false, attention: null, ended: false, edits: [], at }
-  s.at = at
-  if (hook.cwd) s.cwd = hook.cwd
-  const event = hook.hook_event_name
-  if (event === "UserPromptSubmit" || event === "PreToolUse" || event === "PostToolUse") {
-    s.working = true
-    s.ended = false
-    s.attention = null
-  } else if (event === "Stop") {
-    s.working = false
-    s.attention = null
-  } else if (event === "SessionEnd") {
-    s.working = false
-    s.attention = null
-    s.ended = true
-  } else if (event === "PermissionRequest" && hook.tool_name === "AskUserQuestion") {
-    // A question: answerable from the window when it came through Muta's question script.
-    s.working = true
-    s.attention = { questions: (hook.tool_input && hook.tool_input.questions) || [], ask: hook.muta_ask || null }
-  }
-  if (event === "PreToolUse" && /^(Edit|MultiEdit|Write)$/.test(hook.tool_name || "")) {
-    const input = hook.tool_input || {}
-    const text = input.new_string || (input.edits || []).map((e) => e.new_string || "").join("\n") || input.content || ""
-    if (input.file_path) s.edits.push({ path: input.file_path, text, at })
-    if (s.edits.length > AGENT_EDITS) s.edits.splice(0, s.edits.length - AGENT_EDITS)
-  }
-  return s
-}
-
-/**
- * Claude Code's settings with Muta's hooks in (running command) or taken out
- * (command null), leaving every other hook as it is.
- */
-function withHooks(settings, command, questionCommand = command) {
-  const next = { ...settings, hooks: { ...(settings.hooks || {}) } }
-  const ours = (group) => (group.hooks || []).some((h) => String(h.command || "").includes(HOOK_MARK))
-  // Notification: an earlier version's, taken out.
-  for (const event of [...HOOK_EVENTS, "Notification"]) {
-    const groups = (next.hooks[event] || []).filter((g) => !ours(g))
-    if (command && HOOK_EVENTS.includes(event)) {
-      // Only questions go to the question script, which waits for an answer from the window (up to 10 minutes).
-      const hook =
-        event === "PermissionRequest"
-          ? { type: "command", command: questionCommand, timeout: 610 }
-          : { type: "command", command, timeout: 5 }
-      const group = { hooks: [hook] }
-      if (event === "PreToolUse" || event === "PostToolUse") group.matcher = "*"
-      if (event === "PermissionRequest") group.matcher = "AskUserQuestion"
-      groups.push(group)
-    }
-    if (groups.length) next.hooks[event] = groups
-    else delete next.hooks[event]
-  }
-  if (!Object.keys(next.hooks).length) delete next.hooks
-  return next
 }
 
 /** How each agent starts in a terminal with a first prompt (the prompt follows, quoted). */
@@ -1023,9 +990,16 @@ const AGENT_LAUNCH = {
   antigravity: "agy -i",
 }
 
-/** The first prompt for an agent sent a note: what it is and where, and the note itself. */
-function agentPrompt(title, file, content) {
-  return `Work on "${title}", from my notes (${file}):\n\n${content.trim()}\n`
+/**
+ * The first prompt for an agent sent a note: the note as an @ reference
+ * (file: its path from where the agent starts, quoted when it has spaces),
+ * so the agent reads it itself rather than being handed its text, and an ask
+ * to wait for what you want done with it. Claude Code takes the file in with
+ * the prompt; the others read it with their own tools.
+ */
+function agentPrompt(file) {
+  const ref = /\s/.test(file) ? `@"${file}"` : `@${file}`
+  return `${ref}\n\nThis is the note I want to work on. Read it, then wait for what I ask.\n`
 }
 
 /** The git repository folder dir is in, or null. */
@@ -1036,65 +1010,70 @@ function gitRoot(dir) {
   return null
 }
 
+/**
+ * The lower half of each pill's outline (pills: { x, y, w, h } in a box
+ * width by height), as an SVG: down its sides from half way, round its lower
+ * corners and along its bottom, fading in from the middle, for the beams'
+ * light on the buttons beside the notch to show through.
+ */
+function keysOutline(pills, width, height) {
+  const r = 7.5
+  const paths = pills
+    .map((p) => {
+      const x0 = p.x + 0.5
+      const x1 = p.x + p.w - 0.5
+      const y1 = p.y + p.h - 0.5
+      const mid = p.y + p.h / 2
+      return `<path d="M${x0},${mid} L${x0},${y1 - r} A${r},${r} 0 0 0 ${x0 + r},${y1} L${x1 - r},${y1} A${r},${r} 0 0 0 ${x1},${y1 - r} L${x1},${mid}" fill="none" stroke="url(#fade)" stroke-width="1"/>`
+    })
+    .join("")
+  const fade = `<linearGradient id="fade" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity="0"/><stop offset="1" stop-color="#fff"/></linearGradient>`
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><defs>${fade}</defs>${paths}</svg>`
+}
+
+/** The keys to hold while hovering a link to preview it (settings.hoverKey). */
+const HOVER_KEYS = { meta: "⌘ Command", alt: "⌥ Option", ctrl: "⌃ Control", shift: "⇧ Shift", none: "None: any hover" }
+
+/**
+ * Muta's menu (the top bar's sliders button), from the agents watched
+ * (Settings › AI) and Obsidian's vaults ([{ name, path, current }]): items of
+ * { title, icon, checked, action } (action: { send: agent }, { vault: path },
+ * { command: id } or { settings: true }), { submenu } in place of an action,
+ * and { separator: true } between groups.
+ */
+function menuItems(agents, vaults = []) {
+  return [
+    agents.length
+      ? { title: "Send to agent", icon: "bot", submenu: agents.map((kind) => ({ title: AGENT_NAMES[kind], action: { send: kind } })) }
+      : { title: "Send to agent (none turned on in Settings › AI)", icon: "bot", disabled: true },
+    { separator: true },
+    {
+      title: "Vaults",
+      icon: "folder",
+      submenu: [
+        // The others to switch to, by name; this one ticked.
+        ...[...vaults]
+          .sort((a, b) => a.name.localeCompare(b.name))
+          .map((v) => (v.current ? { title: v.name, checked: true, disabled: true } : { title: v.name, action: { vault: v.path } })),
+        ...(vaults.length ? [{ separator: true }] : []),
+        { title: "Manage vaults…", action: { command: "app:open-vault" } },
+      ],
+    },
+    { title: "Muta settings…", icon: "settings", action: { settings: true } },
+  ]
+}
+
 /** s for a POSIX shell, in single quotes. */
 const shellQuote = (s) => `'${String(s).replace(/'/g, "'\\''")}'`
 /** s as an AppleScript string. */
 const appleQuote = (s) => `"${String(s).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`
 
-/** What the question script gives Claude Code: the questions, answered (answers: question text → label(s) or typed text). */
-function questionAnswer(questions, answers) {
-  return {
-    hookSpecificOutput: {
-      hookEventName: "PermissionRequest",
-      decision: { behavior: "allow", updatedInput: { questions, answers } },
-    },
-  }
-}
-
-/** Cursor's hooks.json with Muta's hooks in (running script) or taken out (script null), leaving every other hook. */
-function withCursorHooks(config, script) {
-  const next = { version: 1, ...config, hooks: { ...(config.hooks || {}) } }
-  for (const event of CURSOR_HOOK_EVENTS) {
-    const hooks = (next.hooks[event] || []).filter((h) => !String(h.command || "").includes(CURSOR_HOOK_MARK))
-    if (script) hooks.push({ command: `sh ${script} ${event}` })
-    if (hooks.length) next.hooks[event] = hooks
-    else delete next.hooks[event]
-  }
-  if (!Object.keys(next.hooks).length) delete next.hooks
-  return next
-}
-
-/**
- * A Cursor agent conversation after hook event hook (at: when, ms). A prompt
- * starts a turn, its tools and replies continue it, stop ends it, sessionEnd
- * ends the conversation. File edits say which files and what's new.
- */
-function cursorHookEvent(session, hook, at) {
-  const s = session
-    ? { ...session, edits: [...session.edits] }
-    : { id: hook.conversation_id, kind: "cursor", cwd: null, working: false, attention: null, ended: false, edits: [], at }
-  s.at = at
-  if (Array.isArray(hook.workspace_roots) && hook.workspace_roots[0]) s.cwd = hook.workspace_roots[0]
-  const event = hook.hook_event_name
-  if (event === "stop") s.working = false
-  else if (event === "sessionEnd") {
-    s.working = false
-    s.ended = true
-  } else {
-    s.working = true
-    s.ended = false
-  }
-  if (event === "afterFileEdit" && hook.file_path) {
-    const text = (hook.edits || []).map((e) => e.new_string || "").join("\n")
-    s.edits.push({ path: hook.file_path, text, at })
-    if (s.edits.length > AGENT_EDITS) s.edits.splice(0, s.edits.length - AGENT_EDITS)
-  }
-  return s
-}
-
 /** Writes an executable script. */
 function writeScript(file, text) {
   const fs = require("fs")
+  try {
+    if (fs.readFileSync(file, "utf8") === text) return
+  } catch {}
   fs.mkdirSync(require("path").dirname(file), { recursive: true })
   fs.writeFileSync(file, text, { mode: 0o755 })
 }
@@ -1108,8 +1087,46 @@ function editJson(file, what, change) {
   } catch {
     if (fs.existsSync(file)) throw new Error(`${what} couldn't be read, so it was left as it is`)
   }
+  const text = JSON.stringify(change(data), null, 2) + "\n"
+  // Unchanged (hooks brought up to date on every load): left alone.
+  if (fs.existsSync(file) && JSON.stringify(data, null, 2) + "\n" === text) return
   fs.mkdirSync(require("path").dirname(file), { recursive: true })
-  fs.writeFileSync(file, JSON.stringify(change(data), null, 2) + "\n")
+  fs.writeFileSync(file, text)
+}
+
+/** An edit's lines as they read on the page: those it adds (all its new ones when it only rearranges) and those it takes away. */
+function editLines(old, text) {
+  const was = changedLines(old)
+  const now = changedLines(text)
+  const added = now.filter((l) => !was.includes(l))
+  return { added: added.length ? added : now, removed: was.filter((l) => !now.includes(l)) }
+}
+
+/** The page's blocks of text an edit can land in: paragraphs, list items, headings, table cells, callout titles, code. */
+function editBlocks(page) {
+  return [...page.querySelectorAll(".markdown-preview-sizer :is(p, li, h1, h2, h3, h4, h5, h6, td, th, .callout-title-inner, pre)")]
+}
+
+/** A block's text, its spaces evened out. */
+const blockText = (el) => el.textContent.replace(/\s+/g, " ").trim()
+
+/** Of blocks, those not holding another of them: a list item's own text, not its whole list. */
+function innermost(blocks) {
+  return blocks.filter((el) => !blocks.some((o) => o !== el && el.contains(o)))
+}
+
+/** The innermost block holding each of lines (as changedLines() gives them), once each. */
+function blocksWith(blocks, lines) {
+  const out = []
+  for (const line of lines) {
+    const holders = blocks.filter((el) => {
+      const t = blockText(el)
+      return t.includes(line) || (line.includes(t) && t.length >= 12)
+    })
+    const el = innermost(holders)[0]
+    if (el && !out.includes(el)) out.push(el)
+  }
+  return out
 }
 
 /**
@@ -1164,18 +1181,21 @@ const within = (p, dir) => p === dir || p.startsWith(dir + "/")
 module.exports = class extends Plugin {
   async onload() {
     this.settings = Object.assign({}, DEFAULTS, (await this.loadData()) || (await this.fromFloatingPreview()))
+    // Settings an earlier version kept: following along, and which agents to watch (now, those with hooks in).
+    for (const key of ["agentAutoFollow", "agentClaude", "agentCodex", "agentOpencode", "agentAntigravity", "agentCursor"]) delete this.settings[key]
     this.addSettingTab(new MutaSettings(this.app, this))
     this.patchMenus()
     // Local agents at work in this vault: a beam for each (agents).
     this.agent = null
     this.agents = new AgentWatch(this, (state) => this.onAgent(state))
     this.agents.onEdit = (edit) => this.onAgentEdit(edit)
-    this.recentEdits = []
+    this.agents.upgrade()
+    this.pendingEdits = []
     if (this.settings.agentIndicator) this.agents.start()
-    // An agent's edit to the note on show: it re-renders, then the change is lit.
+    // An agent's edit to the note on show: it re-renders, then the change types in.
     this.registerEvent(
       this.app.vault.on("modify", (file) => {
-        if (this.leaf && this.leaf.view.file === file) window.setTimeout(() => this.lightChanges(file), CHANGE_RENDER_MS)
+        if (this.leaf && this.leaf.view.file === file) window.setTimeout(() => this.playEdits(file), EDIT_RENDER_MS)
       })
     )
     this.leaf = null
@@ -1252,7 +1272,7 @@ module.exports = class extends Plugin {
     this.pendingHover = null
     // The note you hovered from gives the switcher its order when no order notes are set.
     if (sourcePath) this.sourcePath = sourcePath
-    this.schedule(file, this.direction(targetEl))
+    this.schedule(file, this.direction(targetEl), "y", true)
   }
 
   /** Whether the hover key is held (from the last mouse or key event in any of Obsidian's windows). */
@@ -1306,156 +1326,216 @@ module.exports = class extends Plugin {
     if (!doc || doc === document) return
     const { agent } = this
     doc.body.classList.toggle("has-agent", !!agent)
-    // One asking you something leaves the beams to those still working.
-    this.showBeams(doc, agent ? agent.all.filter((a) => !a.attention) : [])
-    this.showAsk(doc, agent ? agent.all.find((a) => a.attention) : null)
+    this.showBeams(doc, agent ? agent.all : [])
   }
+
+  // ── Watching agents edit (experimental) ────────────────────────────
 
   /**
-   * An agent asking you a question: it leaves the beams to the agents still
-   * working, and the bottom bar shows that it's asking, in the name's place.
-   * Clicking that opens the question (openAsk()).
+   * An agent is about to change the note on show (Cursor: just has): the
+   * text it replaces is tinted in its colour and scrolled to; once the page
+   * has the change, the new text types in behind a cursor in its colour
+   * (playEdits()). Edits from a while ago (read back after a reload) and to
+   * other notes are left alone.
    */
-  showAsk(doc, asking) {
-    const body = doc.body
-    const sw = this.ui && this.ui.switcher
-    const before = this.asking && this.asking.attention.ask
-    this.asking = asking || null
-    body.classList.toggle("has-ask", !!asking)
-    if (asking && sw) {
-      sw.ask.dataset.agent = asking.kind
-      const q = asking.attention.questions[0]
-      sw.askText.setText(`${AGENT_NAMES[asking.kind]} asks${q && q.header ? ` · ${q.header}` : ""}`)
-      sw.ask.setAttribute("aria-label", `${AGENT_NAMES[asking.kind]} asks: ${q ? q.question : ""}`)
-    }
-    // Answered (here or in the terminal), or a new question: the open one goes.
-    if (body.classList.contains("is-ask-open") && (!asking || asking.attention.ask !== before)) this.closeAsk()
-  }
-
-  /**
-   * The question, over the page above the bottom bar, grown out of its
-   * button: each question with its options (one, or several when it allows
-   * that) and a field to type an answer of your own, and Send.
-   */
-  openAsk() {
-    const sw = this.ui && this.ui.switcher
-    const asking = this.asking
-    if (!sw || !asking) return
-    const doc = sw.el.ownerDocument
-    if (doc.body.classList.contains("is-ask-open")) return this.closeAsk()
-    let panel = this.askPanel
-    if (!panel || !panel.isConnected) {
-      panel = this.askPanel = doc.body.createDiv({ cls: "muta-ask-panel" })
-      doc.addEventListener("pointerdown", (e) => {
-        if (doc.body.classList.contains("is-ask-open") && !panel.contains(e.target) && !sw.ask.contains(e.target)) this.closeAsk()
-      }, true)
-      doc.addEventListener("keydown", (e) => {
-        if (e.key === "Escape" && doc.body.classList.contains("is-ask-open")) this.closeAsk()
-      })
-    }
-    panel.empty()
-    panel.dataset.agent = asking.kind
-    const who = panel.createDiv({ cls: "muta-ask-agent" })
-    who.createSpan({ cls: "muta-ask-dot" })
-    who.createSpan({ text: `${AGENT_NAMES[asking.kind]} asks` })
-    const { questions, ask } = asking.attention
-    const chosen = new Map(questions.map((q) => [q.question, new Set()]))
-    const typed = new Map()
-    const send = panel.createEl("button", { cls: "muta-ask-send", text: "Send" })
-    const ready = () => questions.every((q) => chosen.get(q.question).size || (typed.get(q.question) || "").trim())
-    const refresh = () => (send.disabled = !ready())
-    for (const q of questions) {
-      const block = panel.createDiv({ cls: "muta-ask-question" })
-      block.createDiv({ cls: "muta-ask-text", text: q.question })
-      const options = block.createDiv({ cls: "muta-ask-options" })
-      for (const o of q.options || []) {
-        const b = options.createEl("button", { cls: "muta-ask-option" })
-        b.createSpan({ cls: "muta-ask-label", text: o.label })
-        if (o.description) b.createSpan({ cls: "muta-ask-description", text: o.description })
-        b.addEventListener("click", () => {
-          const set = chosen.get(q.question)
-          if (q.multiSelect) set.has(o.label) ? set.delete(o.label) : set.add(o.label)
-          else {
-            set.clear()
-            set.add(o.label)
-            options.querySelectorAll(".is-chosen").forEach((x) => x.removeClass("is-chosen"))
-          }
-          b.toggleClass("is-chosen", set.has(o.label))
-          refresh()
-        })
-      }
-      const other = block.createEl("input", { cls: "muta-ask-other", attr: { type: "text", placeholder: "Or type an answer…" } })
-      other.addEventListener("input", () => {
-        typed.set(q.question, other.value)
-        refresh()
-      })
-      other.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" && ready()) send.click()
-      })
-    }
-    panel.appendChild(send)
-    refresh()
-    send.addEventListener("click", () => {
-      const answers = {}
-      for (const q of questions) {
-        const own = (typed.get(q.question) || "").trim()
-        const picked = [...chosen.get(q.question)]
-        answers[q.question] = own || (q.multiSelect ? picked : picked[0])
-      }
-      this.agents.answer(ask, answers)
-      this.closeAsk()
-    })
-    // It grows out of the button.
-    const b = sw.ask.getBoundingClientRect()
-    doc.body.classList.add("is-ask-open")
-    const p = panel.getBoundingClientRect()
-    const inset = (r) => `inset(${r.top - p.top}px ${p.right - r.right}px ${p.bottom - r.bottom}px ${r.left - p.left}px round 12px)`
-    if (!reduceMotion())
-      panel.animate([{ clipPath: inset(b), opacity: 0.6 }, { clipPath: "inset(0 round 12px)", opacity: 1 }], {
-        duration: 340,
-        easing: "cubic-bezier(0.32, 0.72, 0, 1)",
-      })
-  }
-
-  closeAsk() {
-    const doc = this.askPanel && this.askPanel.ownerDocument
-    if (doc) doc.body.classList.remove("is-ask-open")
-  }
-
-  /** An agent changed a note in the vault: kept a while, and lit at once if it's the note on show. */
   onAgentEdit(edit) {
-    const now = Date.now()
-    this.recentEdits = [...this.recentEdits.filter((e) => now - e.seen < CHANGE_KEEP_MS), { ...edit, seen: now }]
-    if (this.leaf && this.leaf.view.file === edit.file) window.setTimeout(() => this.lightChanges(edit.file), CHANGE_RENDER_MS)
+    if (!this.settings.agentEditView || Date.now() - edit.at > EDIT_FRESH_MS) return
+    const page = this.page()
+    if (!page || !this.leaf || this.leaf.view.file !== edit.file) return
+    const blocks = editBlocks(page)
+    const pending = { ...edit, seen: Date.now(), before: new Set(blocks.map(blockText)), tinted: [] }
+    // Its change is on the page already (Cursor's, or it came in first): it types in now.
+    const { added } = editLines(edit.old, edit.text)
+    const there = added.length && added.every((line) => blocks.some((el) => blockText(el).includes(line)))
+    if (edit.after || there) {
+      pending.before = null
+      this.pendingEdits.push(pending)
+      return this.playEdits(edit.file)
+    }
+    if (edit.old) {
+      pending.tinted = blocksWith(blocks, changedLines(edit.old))
+      for (const el of pending.tinted) {
+        el.dataset.mutaAgent = edit.kind
+        el.addClass("muta-edit-old")
+      }
+      if (pending.tinted[0]) this.scrollToEdit(pending.tinted[0])
+    }
+    this.pendingEdits.push(pending)
+    this.watchPage(page, edit.file)
+    // Waiting on you to allow it, or denied: the tint goes after a while.
+    window.setTimeout(() => pending.tinted.forEach((el) => el.removeClass("muta-edit-old")), EDIT_TINT_MS)
   }
 
   /**
-   * See what changed: the lines agents changed on the page on show, lately,
-   * glow for a moment in the agent's colour (styles.css). Each change lights
-   * once.
+   * Plays the edits waiting on the note on show the moment its page changes,
+   * before the change is drawn, so the new text never shows before it types
+   * in. Stops once none are waiting.
    */
-  lightChanges(file) {
+  watchPage(page, file) {
+    if (this.editObserver && this.editObserver.page === page) return
+    if (this.editObserver) this.editObserver.disconnect()
+    const observer = new page.ownerDocument.defaultView.MutationObserver(() => {
+      if (!page.isConnected || !this.pendingEdits.some((p) => p.file === file && p.before)) {
+        observer.disconnect()
+        if (this.editObserver === observer) this.editObserver = null
+        return
+      }
+      this.playEdits(file, true)
+    })
+    observer.page = page
+    observer.observe(page, { childList: true, subtree: true, characterData: true })
+    this.editObserver = observer
+  }
+
+  /**
+   * The note on show changed: each edit waiting for it types in, in turn,
+   * where the page changed. early: as the page changes (watchPage()), when
+   * an edit whose change isn't on the page yet keeps waiting.
+   */
+  playEdits(file, early = false) {
     const page = this.page()
     if (!page || !this.leaf || this.leaf.view.file !== file) return
     const now = Date.now()
-    const edits = this.recentEdits.filter((e) => e.file === file && now - e.seen < CHANGE_KEEP_MS && !e.lit)
-    if (!edits.length) return
-    const blocks = [...page.querySelectorAll(".markdown-preview-sizer :is(p, li, h1, h2, h3, h4, h5, h6, td, th, .callout-title-inner, pre)")]
-    const textOf = new Map(blocks.map((el) => [el, el.textContent.replace(/\s+/g, " ").trim()]))
-    for (const edit of edits) {
-      edit.lit = true
-      for (const line of changedLines(edit.text)) {
-        // The innermost block that holds the line (a list item's own text, not its whole list).
-        const holders = blocks.filter((el) => textOf.get(el).includes(line) || (line.includes(textOf.get(el)) && textOf.get(el).length >= 12))
-        const el = holders.find((h) => !holders.some((o) => o !== h && h.contains(o))) || holders[0]
-        if (!el) continue
-        el.dataset.mutaChanged = edit.kind
-        el.classList.remove("muta-changed")
-        void el.offsetWidth // restart the glow if it's lit again
-        el.classList.add("muta-changed")
-        window.setTimeout(() => el.classList.remove("muta-changed"), CHANGE_GLOW_MS)
+    this.pendingEdits = this.pendingEdits.filter((p) => now - p.seen < EDIT_KEEP_MS)
+    const blocks = editBlocks(page)
+    const isNew = (p) => innermost(blocks.filter((el) => !p.before.has(blockText(el))))
+    const due = this.pendingEdits.filter((p) => p.file === file && (!early || (p.before && isNew(p).length)))
+    if (!due.length) return
+    this.pendingEdits = this.pendingEdits.filter((p) => !due.includes(p))
+    let first = null
+    let delay = 0
+    for (const p of due) {
+      p.tinted.forEach((el) => el.removeClass("muta-edit-old"))
+      const { added, removed } = editLines(p.old, p.text)
+      // What's new on the page since the edit was heard of; else where its new lines are.
+      let changed = p.before ? isNew(p) : []
+      if (!changed.length) changed = blocksWith(blocks, added)
+      changed = changed.slice(0, EDIT_MAX_BLOCKS)
+      // Heard of only once the page had it (the usual case: the agent writes as
+      // soon as its hook returns), what it replaced shows a moment, struck
+      // through, before the new text types in.
+      if (removed.length && !p.tinted.length && changed[0] && !reduceMotion())
+        delay = this.ghostOld(changed[0], p.kind, removed.join(" "), delay)
+      for (const el of changed) {
+        first = first || el
+        delay = this.typeIn(page, el, p.kind, delay)
       }
     }
+    if (first) this.scrollToEdit(first)
+  }
+
+  /** What edit replaced, shown at the start of block el from start (ms), struck through in the agent's colour, then gone; returns when the new text can start. */
+  ghostOld(el, kind, text, start) {
+    const ghost = el.ownerDocument.createElement("span")
+    ghost.className = "muta-edit-ghost"
+    ghost.dataset.mutaAgent = kind
+    ghost.textContent = text
+    ghost.style.animationDelay = `${start}ms, ${start + 450}ms`
+    el.prepend(ghost)
+    window.setTimeout(() => ghost.remove(), start + 720)
+    return start + 760
+  }
+
+  /** Scrolls the page to el when it isn't in view (at once with Reduce motion). */
+  scrollToEdit(el) {
+    const page = this.page()
+    if (!page) return
+    const r = el.getBoundingClientRect()
+    const p = page.getBoundingClientRect()
+    if (r.top >= p.top + 24 && r.bottom <= p.bottom - 24) return
+    el.scrollIntoView({ block: "center", behavior: reduceMotion() ? "auto" : "smooth" })
+  }
+
+  /**
+   * Types block el in, word by word from start (ms), behind a cursor in the
+   * agent's colour that moves along the words; returns when it ends. Its
+   * words go back to plain text after. With Reduce motion, the cursor just
+   * stands at its end a moment.
+   */
+  typeIn(page, el, kind, start) {
+    const doc = el.ownerDocument
+    const words = []
+    const walker = doc.createTreeWalker(el, 4) // text nodes
+    const nodes = []
+    while (walker.nextNode()) {
+      const node = walker.currentNode
+      if (node.nodeValue.trim() && !node.parentElement.closest(".muta-edit-ghost")) nodes.push(node)
+    }
+    if (!reduceMotion())
+      for (const node of nodes) {
+        const parts = doc.createDocumentFragment()
+        for (const part of node.nodeValue.split(/(\s+)/)) {
+          if (!part) continue
+          if (/^\s+$/.test(part)) parts.append(part)
+          else {
+            const w = doc.createElement("span")
+            w.className = "muta-typed"
+            w.textContent = part
+            parts.append(w)
+            words.push(w)
+          }
+        }
+        node.replaceWith(parts)
+      }
+    // The page's one cursor: one already showing (an earlier block or edit)
+    // first glides over to this block, and typing waits for it.
+    const shown = page.mutaCaret && page.mutaCaret.isConnected ? page.mutaCaret : null
+    const travel = (shown || start > 0) && !reduceMotion() ? EDIT_CARET_TRAVEL_MS : 0
+    const from = start
+    start += travel
+    const step = words.length ? Math.min(EDIT_WORD_MS, EDIT_TYPE_MAX_MS / words.length) : 0
+    words.forEach((w, i) => (w.style.animationDelay = `${start + i * step}ms`))
+    const end = start + words.length * step
+    const caret = shown || page.createDiv({ cls: "muta-caret" })
+    if (!shown) caret.style.visibility = "hidden"
+    page.mutaCaret = caret
+    // Measured as it sets off, once what's before it (the old text shown
+    // struck through, an earlier block typing in) has settled: from where it
+    // is, it eases over to this block's first word, then glides along the
+    // words' ends as they type in.
+    window.setTimeout(() => {
+      if (!caret.isConnected || page.mutaCaret !== caret) return
+      caret.mutaUntil = end
+      caret.dataset.mutaAgent = kind
+      caret.removeClass("is-done", "is-leaving")
+      const pageBox = page.getBoundingClientRect()
+      const at = (r) => [r.right - pageBox.left + 1, r.top - pageBox.top + page.scrollTop, r.height]
+      const stops = (words.length ? words : [el]).map((w) => at(w.getBoundingClientRect()))
+      const place = ([x, y]) => `translate(${x}px, ${y}px)`
+      // Where it is right now, mid-glide or not.
+      const here = caret.style.visibility === "hidden" ? null : caret.ownerDocument.defaultView.getComputedStyle(caret).transform
+      caret.getAnimations().forEach((a) => a.cancel())
+      caret.style.height = `${stops[0][2]}px`
+      caret.style.visibility = ""
+      if (reduceMotion()) return (caret.style.transform = place(stops[stops.length - 1]))
+      const glide = end - from
+      const frames = stops.map((s, i) => ({
+        transform: place(s),
+        offset: (start - from + (stops.length > 1 ? (i / (stops.length - 1)) * (end - start) : 0)) / glide,
+        easing: "linear",
+      }))
+      if (here && here !== "none") frames.unshift({ transform: here, offset: 0, easing: "cubic-bezier(0.32, 0.72, 0, 1)" })
+      else frames[0].offset = 0
+      caret.style.transform = frames[frames.length - 1].transform
+      caret.animate(frames, { duration: Math.max(glide, 1), easing: "linear" })
+    }, from)
+    // Done typing: it blinks where it stopped, for the agent's next edit to
+    // glide on from, and fades once none has come for a while.
+    window.setTimeout(() => caret.mutaUntil === end && caret.addClass("is-done"), end)
+    window.setTimeout(() => {
+      if (caret.mutaUntil !== end) return
+      caret.addClass("is-leaving")
+      window.setTimeout(() => {
+        if (caret.mutaUntil !== end) return caret.removeClass("is-leaving")
+        caret.remove()
+        if (page.mutaCaret === caret) page.mutaCaret = null
+      }, 300)
+    }, end + EDIT_CARET_LINGER_MS)
+    window.setTimeout(() => {
+      for (const w of words) if (w.isConnected) w.replaceWith(w.textContent)
+      if (el.isConnected) el.normalize()
+    }, end + 400)
+    return end + 120
   }
 
   /**
@@ -1469,11 +1549,11 @@ module.exports = class extends Plugin {
     const page = this.leaf.view.contentEl
     const beams = (this.beams = this.beams || new Map())
     const shown = agents.slice(0, MAX_BEAMS)
+    const header = this.leaf.view.headerEl
     // The window was opened again, or the page replaced: its beams are new.
     for (const [id, beam] of beams)
-      if (!beam.glow.isConnected || beam.glow.parentElement !== page) {
-        beam.glow.remove()
-        beam.rim.remove()
+      if (!beam.glow.isConnected || beam.glow.parentElement !== page || beam.keys.parentElement !== header) {
+        for (const el of [beam.glow, beam.rim, beam.keys]) el.remove()
         beams.delete(id)
       }
     const sync = `${-(performance.now() % BEAM_TURN_MS)}ms, 0ms`
@@ -1482,45 +1562,95 @@ module.exports = class extends Plugin {
       if (beam && beam.leaving) {
         window.clearTimeout(beam.leaving)
         beam.leaving = 0
-        for (const el of [beam.glow, beam.rim]) el.removeClass("is-leaving")
+        for (const el of [beam.glow, beam.rim, beam.keys]) el.removeClass("is-leaving")
       }
       if (!beam) {
         const glow = page.createDiv({ cls: "muta-agent-glow" })
         glow.createDiv({ cls: "muta-agent-haze" })
         glow.createDiv({ cls: "muta-agent-bloom" })
         const rim = doc.body.createDiv({ cls: "muta-agent-rim" })
-        beam = { glow, rim, leaving: 0 }
+        // The edges of the buttons beside the notch catch its light too.
+        const keys = header.createDiv({ cls: "muta-agent-rim muta-agent-keys" })
+        beam = { glow, rim, keys, leaving: 0 }
         beams.set(a.id, beam)
-        for (const el of [glow, rim]) {
+        for (const el of [glow, rim, keys]) {
           el.dataset.agent = a.kind
           el.style.animationDelay = sync
         }
       }
     }
     // Spread round the edge: each its share of the turn, new ones starting where the last left off.
+    // One waiting on you pulses (styles.css).
     shown.forEach((a, i) => {
       const beam = beams.get(a.id)
-      for (const el of [beam.glow, beam.rim]) {
+      for (const el of [beam.glow, beam.rim, beam.keys]) {
+        el.toggleClass("is-waiting", !!a.waiting)
         el.style.setProperty("--muta-beam-offset", `${(360 / shown.length) * i}deg`)
         el.style.setProperty("--muta-beam-span", `${360 / shown.length}deg`)
       }
     })
     for (const [id, beam] of beams)
       if (!shown.some((a) => a.id === id) && !beam.leaving) {
-        for (const el of [beam.glow, beam.rim]) el.addClass("is-leaving")
+        for (const el of [beam.glow, beam.rim, beam.keys]) el.addClass("is-leaving")
         beam.leaving = window.setTimeout(() => {
-          beam.glow.remove()
-          beam.rim.remove()
+          for (const el of [beam.glow, beam.rim, beam.keys]) el.remove()
           beams.delete(id)
         }, 500)
       }
+    if (shown.length) this.watchKeys(doc)
   }
 
-  /** Shows the hovered file at once; while one is loading, only the latest hover is kept. */
-  schedule(file, direction = 1, axis = "y") {
+  /**
+   * Keeps the lower outline of the buttons beside the notch (two pills: back
+   * and forward; edit, Muta's menu and More options) as the mask the beams'
+   * light on them shows through (styles.css's .muta-agent-keys), as the
+   * window docks, undocks or changes size.
+   */
+  watchKeys(doc) {
+    const win = doc.defaultView
+    if (this.keysWatched !== doc) {
+      this.keysWatched = doc
+      const update = () => this.beams && this.beams.size && this.updateKeys()
+      new win.MutationObserver(update).observe(doc.body, { attributes: true, attributeFilter: ["class"] })
+      win.addEventListener("resize", update)
+    }
+    this.updateKeys()
+  }
+
+  updateKeys() {
+    const view = this.leaf && this.leaf.view
+    const header = view && view.headerEl
+    if (!header) return
+    const h = header.getBoundingClientRect()
+    if (!h.width || !h.height) return
+    const box = (els) => {
+      const rs = els.filter(Boolean).map((el) => el.getBoundingClientRect()).filter((r) => r.width && r.height)
+      if (!rs.length) return null
+      return {
+        left: Math.min(...rs.map((r) => r.left)),
+        top: Math.min(...rs.map((r) => r.top)),
+        right: Math.max(...rs.map((r) => r.right)),
+        bottom: Math.max(...rs.map((r) => r.bottom)),
+      }
+    }
+    const pills = [
+      box([header.querySelector(".view-header-nav-buttons")]),
+      box([...header.querySelectorAll(".view-actions > .view-action:not(.muta-close)"), view.moreOptionsButtonEl]),
+    ].filter(Boolean)
+    const svg = keysOutline(pills.map((r) => ({ x: r.left - h.left, y: r.top - h.top, w: r.right - r.left, h: r.bottom - r.top })), h.width, h.height)
+    header.style.setProperty("--muta-keys-mask", `url("data:image/svg+xml,${encodeURIComponent(svg)}")`)
+  }
+
+  /**
+   * Shows the hovered file at once; while one is loading, only the latest
+   * hover is kept. peek: it came from a link hovered in Obsidian, so a window
+   * docked at the notch comes out to show it.
+   */
+  schedule(file, direction = 1, axis = "y", peek = false) {
     this.next = file
     this.nextDirection = direction
     this.nextAxis = axis
+    this.nextPeek = peek
     if (!this.busy) this.drain()
   }
 
@@ -1531,8 +1661,9 @@ module.exports = class extends Plugin {
         const file = this.next
         const direction = this.nextDirection || 1
         const axis = this.nextAxis || "y"
+        const peek = this.nextPeek
         this.next = null
-        await this.show(file, direction, axis)
+        await this.show(file, direction, axis, peek)
       }
     } finally {
       this.busy = false
@@ -1548,29 +1679,29 @@ module.exports = class extends Plugin {
     )
   }
 
-  async show(file, direction = 1, axis = "y") {
+  async show(file, direction = 1, axis = "y", peek = false) {
     if (!this.isOpen()) {
       this.closeWindow()
-      await this.openWindow()
+      if (!(await this.openWindow())) return
     }
-    // Docked at the notch, it grows out to show the hovered page.
-    if (this.pip) this.pip.peek()
+    // Docked at the notch, it grows out to show a page hovered in Obsidian (and
+    // stays out a moment); a step from inside the window doesn't hold it out.
+    if (this.pip && peek) this.pip.peek()
     const { leaf } = this
-    if (!leaf || (leaf.view.file && leaf.view.file.path === file.path)) return
+    if (!leaf || (leaf.view.file && leaf.view.file.path === file.path)) return this.reveal()
     const old = this.snapshot()
     await leaf.openFile(file, { active: false, state: { mode: "preview" } })
     this.attach()
     this.addCloseButton()
-    this.addSendButton()
+    this.addMenuButton()
     this.showAgent()
     const raf = leaf.view.containerEl.win || window
     if (this.updateFades) raf.setTimeout(this.updateFades, 50)
     this.collapsePending = true
     this.collapseProperties()
     this.crossfade(old, direction, axis)
+    this.reveal()
     this.markCurrent(file)
-    // Changed by an agent lately: lit once the page is in.
-    window.setTimeout(() => this.lightChanges(file), CHANGE_RENDER_MS)
     this.updateSwitcher(file)
     // The page renders over a few frames; place the rail's marks once it has.
     for (const ms of [30, 60, 150, 400])
@@ -1721,12 +1852,6 @@ module.exports = class extends Plugin {
     const name = label.createSpan({ cls: "muta-switcher-name" })
     const next = bar.createEl("button", { cls: "muta-switcher-step", attr: { "aria-label": "Next feature", "data-tooltip-position": "top" } })
     setIcon(next, "chevron-right")
-    // An agent waiting on you takes the name's place (showAsk()); click it to answer.
-    const ask = bar.createEl("button", { cls: "muta-switcher-ask" })
-    ask.createSpan({ cls: "muta-ask-dot" })
-    const askText = ask.createSpan({ cls: "muta-switcher-ask-text" })
-    bar.insertBefore(ask, next)
-    ask.addEventListener("click", () => this.openAsk())
     prev.addEventListener("click", () => this.step(-1))
     next.addEventListener("click", () => this.step(1))
     this.attachNameSwipe(el, label)
@@ -1755,7 +1880,7 @@ module.exports = class extends Plugin {
       win.clearTimeout(this.menuClosing)
       this.menuClosing = win.setTimeout(() => body.classList.remove("is-menu-closing"), ms)
     }
-    return { el, title, label, name, ask, askText }
+    return { el, title, label, name }
   }
 
   /**
@@ -2202,19 +2327,32 @@ module.exports = class extends Plugin {
         .finished.then(done, done)
   }
 
+  /**
+   * Opens the window: an Obsidian popout, kept invisible until it's been
+   * made Muta's (placed, glass, its page in; reveal()), so it never shows as
+   * a plain Obsidian window. Says whether it opened.
+   */
   async openWindow() {
     const { BrowserWindow, getCurrentWindow } = remote()
     const main = getCurrentWindow()
+    const dir = this.pluginDir()
+    // Before the window exists: a BRAT install may still be fetching them.
+    await this.ensureNatives()
     const before = new Set(BrowserWindow.getAllWindows().map((w) => w.id))
     this.leaf = this.app.workspace.openPopoutLeaf({ size: SIZE })
+    // Its window can take a while on a cold start.
     let win = null
-    for (let i = 0; i < 20 && !win; i++) {
+    for (let i = 0; i < WINDOW_WAIT_MS / 25 && !win; i++) {
       win = BrowserWindow.getAllWindows().find((w) => !before.has(w.id))
       if (!win) await sleep(25)
     }
-    if (!win) return
-    const dir = this.pluginDir()
-    await this.ensureNatives()
+    if (!win) {
+      // Never came: the leaf goes too, rather than a plain popout left behind.
+      this.closeWindow()
+      return false
+    }
+    win.setOpacity(0)
+    this.hidden = win
     const pipMain = remote().require(`${dir}/pip-load.js`).load(`${dir}/pip-main.js`)
 
     const start = pipMain.placement({
@@ -2260,6 +2398,16 @@ module.exports = class extends Plugin {
     this.win = win
     // Keep working where you were: the new windows don't take focus.
     main.focus()
+    return true
+  }
+
+  /** The window, once its first page is in and drawn, shows (openWindow()). */
+  reveal() {
+    const win = this.hidden
+    if (!win || win !== this.win) return
+    this.hidden = null
+    const raf = (this.leaf && this.leaf.view.containerEl.win) || window
+    raf.requestAnimationFrame(() => raf.requestAnimationFrame(() => alive(win) && win.setOpacity(1)))
   }
 
   pluginDir() {
@@ -2427,27 +2575,83 @@ module.exports = class extends Plugin {
   }
 
   /**
-   * A close button in the top bar's right corner (the next hovered link opens
-   * the window again), and the page's menu moved to its left corner.
+   * Muta's own menu, in the top bar's right corner (beside edit and More
+   * options, docked at the notch): sending the note to an agent, changing
+   * vault and Muta's settings (menuItems()).
    */
-  /** Send to agent: the note on show as the start of a new agent session (sendMenu()). */
-  addSendButton() {
+  addMenuButton() {
     const view = this.leaf && this.leaf.view
-    if (!view || !view.addAction || view.mutaSend) return
-    view.mutaSend = view.addAction("send", "Send to agent", (event) => this.sendMenu(event, view.mutaSend))
-    view.mutaSend.addClass("muta-send")
+    if (!view || !view.addAction || view.mutaMenu) return
+    view.mutaMenu = view.addAction("sliders-horizontal", "Muta", () => this.openMutaMenu(view.mutaMenu))
+    view.mutaMenu.addClass("muta-menu")
+    // In the corner, after close.
+    if (view.actionsEl) view.actionsEl.appendChild(view.mutaMenu)
   }
 
-  /** The agents to send the note to: those turned on in Settings › AI. */
-  sendMenu(event, button) {
-    const s = this.settings
-    const on = { claude: s.agentClaude, codex: s.agentCodex, opencode: s.agentOpencode, cursor: s.agentCursor, antigravity: s.agentAntigravity }
+  /** Opens Muta's menu at its button. */
+  openMutaMenu(button) {
     const menu = new Menu()
-    for (const kind of Object.keys(AGENT_LAUNCH))
-      if (on[kind])
-        menu.addItem((item) => item.setTitle(`Send to ${AGENT_NAMES[kind]}`).setIcon("bot").onClick(() => this.sendToAgent(kind)))
+    const fill = (menu, items) => {
+      for (const item of items) {
+        if (item.separator) {
+          menu.addSeparator()
+          continue
+        }
+        menu.addItem((i) => {
+          i.setTitle(item.title)
+          if (item.icon) i.setIcon(item.icon)
+          if (item.checked) i.setChecked(true)
+          if (item.disabled) i.setDisabled(true)
+          if (item.submenu) fill(i.setSubmenu(), item.submenu)
+          else if (item.action) i.onClick(() => this.runMenuAction(item.action))
+        })
+      }
+    }
+    fill(menu, menuItems(this.agents.watched(), this.vaults()))
     const r = button.getBoundingClientRect()
     menu.showAtPosition({ x: r.left, y: r.bottom + 4 }, button.ownerDocument)
+  }
+
+  /** Obsidian's vaults, as its own vault switcher lists them: [{ name, path, current }]. */
+  vaults() {
+    try {
+      const ipc = window.electron.ipcRenderer
+      const current = ipc.sendSync("vault").path
+      return Object.values(ipc.sendSync("vault-list") || {}).map((v) => ({
+        name: require("path").basename(v.path),
+        path: v.path,
+        current: v.path === current,
+      }))
+    } catch {
+      return []
+    }
+  }
+
+  /** Switches to the vault at path in this window, as Obsidian's own switcher does: it opens there, and this one closes. */
+  openVault(path) {
+    const ipc = window.electron.ipcRenderer
+    const opened = ipc.sendSync("vault-open", path, false)
+    if (opened === true) window.close()
+    else new Notice(`Muta: couldn't open that vault${typeof opened === "string" ? ` (${opened})` : ""}`)
+  }
+
+  /** Does what an item of Muta's menu says (menuItems()). */
+  runMenuAction(action) {
+    if (action.send) this.sendToAgent(action.send)
+    else if (action.vault) this.openVault(action.vault)
+    else if (action.command) this.app.commands.executeCommandById(action.command)
+    else if (action.settings) {
+      this.app.setting.open()
+      this.app.setting.openTabById(this.manifest.id)
+    }
+  }
+
+  /** Changes setting key to value, saves it and applies it. */
+  async saveSetting(key, value) {
+    this.settings[key] = value
+    await this.saveData(this.settings)
+    this.applySettings()
+    if (key === "agentLinkedProjects") this.agents.poll()
   }
 
   /**
@@ -2467,10 +2671,16 @@ module.exports = class extends Plugin {
       real = fs.realpathSync(real)
     } catch {}
     const dir = gitRoot(path.dirname(real)) || base
-    const content = await this.app.vault.read(file)
-    const prompt = agentPrompt(file.basename, real, content)
+    const rel = path.relative(dir, real)
+    const prompt = agentPrompt(rel.startsWith("..") ? real : rel)
     const prompts = path.join(require("os").homedir(), MUTA_DIR, "prompts")
     fs.mkdirSync(prompts, { recursive: true })
+    // Earlier ones, read by their agents long since: gone.
+    for (const name of fs.readdirSync(prompts))
+      try {
+        const old = path.join(prompts, name)
+        if (Date.now() - fs.statSync(old).mtimeMs > 86400000) fs.rmSync(old, { force: true })
+      } catch {}
     const promptFile = path.join(prompts, `${Date.now()}-${kind}.md`)
     fs.writeFileSync(promptFile, prompt)
     const command = `cd ${shellQuote(dir)} && ${AGENT_LAUNCH[kind]} "$(cat ${shellQuote(promptFile)})"`
@@ -2481,6 +2691,10 @@ module.exports = class extends Plugin {
     new Notice(`Muta: sent "${file.basename}" to ${AGENT_NAMES[kind]}`)
   }
 
+  /**
+   * A close button in the top bar's right corner (the next hovered link opens
+   * the window again), and the page's menu moved to its left corner.
+   */
   addCloseButton() {
     const view = this.leaf && this.leaf.view
     if (!view || !view.addAction || view.mutaClose) return
@@ -2946,6 +3160,7 @@ module.exports = class extends Plugin {
   }
 
   closeWindow() {
+    this.hidden = null
     if (this.pip) this.pip.dispose()
     this.pip = null
     if (this.leaf && this.leaf.view && this.leaf.view.containerEl.isConnected)
@@ -2967,11 +3182,7 @@ class MutaSettings extends PluginSettingTab {
   display() {
     const { containerEl } = this
     const plugin = this.plugin
-    const save = async (key, value) => {
-      plugin.settings[key] = value
-      await plugin.saveData(plugin.settings)
-      plugin.applySettings()
-    }
+    const save = (key, value) => plugin.saveSetting(key, value)
     containerEl.empty()
 
     new SettingGroup(containerEl)
@@ -3020,7 +3231,7 @@ class MutaSettings extends PluginSettingTab {
           .setDesc("Hovering a link opens the window only while this key is held, so it doesn't open by accident. Pressed while over a link, it opens then.")
           .addDropdown((d) =>
             d
-              .addOptions({ meta: "⌘ Command", alt: "⌥ Option", ctrl: "⌃ Control", shift: "⇧ Shift", none: "None: any hover" })
+              .addOptions(HOVER_KEYS)
               .setValue(plugin.settings.hoverKey)
               .onChange((v) => save("hoverKey", v))
           )
@@ -3044,79 +3255,47 @@ class MutaSettings extends PluginSettingTab {
           .addToggle((t) => t.setValue(plugin.settings.overscroll).onChange((v) => save("overscroll", v)))
       )
 
-    new SettingGroup(containerEl)
-      .setHeading("AI")
+    const ai = new SettingGroup(containerEl)
+      .setHeading("AI (experimental)")
       .addSetting((s) =>
         s
           .setName("Show when an agent is working")
           .setDesc(
-            "A beam runs round the page's edge while a local agent (Claude Code, Codex, OpenCode or Antigravity) " +
-              "is working in this vault."
+            "Experimental. A beam runs round the page's edge while a local agent is working in this vault. " +
+              "Turn on below each agent to watch: it tells Muta what it's doing through its hooks."
           )
           .addToggle((t) => t.setValue(plugin.settings.agentIndicator).onChange((v) => save("agentIndicator", v)))
       )
       .addSetting((s) =>
         s
-          .setName("Claude Code")
-          .setDesc("Watch Claude Code's sessions (~/.claude/projects).")
-          .addToggle((t) => t.setValue(plugin.settings.agentClaude).onChange((v) => save("agentClaude", v)))
-      )
-      .addSetting((s) =>
-        s
-          .setName("Claude Code hooks")
+          .setName("Watch agents edit")
           .setDesc(
-            "Adds hooks to Claude Code's settings (~/.claude/settings.json) that tell Muta the moment a session " +
-              "starts, edits a note or stops, and let you answer the questions it asks from the window (the terminal " +
-              "still asks too; whichever you answer first counts). The events go to ~/.muta and are deleted once read."
+            "Experimental. On the note in the window, what an agent is about to replace is tinted in its colour, " +
+              "and the new text types in behind a cursor in its colour, the page scrolling to it."
           )
-          .addToggle((t) =>
-            t.setValue(plugin.agents.hooksInstalled()).onChange((v) => {
-              try {
-                plugin.agents.setHooks(v)
-                new Notice(v ? "Muta: Claude Code hooks added. New Claude Code sessions use them." : "Muta: Claude Code hooks taken out.")
-              } catch (error) {
-                new Notice(`Muta: ${error.message}`)
-                t.setValue(!v)
-              }
-            })
-          )
+          .addToggle((t) => t.setValue(plugin.settings.agentEditView).onChange((v) => save("agentEditView", v)))
       )
       .addSetting((s) =>
         s
-          .setName("Codex")
-          .setDesc("Watch Codex's sessions (~/.codex/sessions).")
-          .addToggle((t) => t.setValue(plugin.settings.agentCodex).onChange((v) => save("agentCodex", v)))
-      )
-      .addSetting((s) =>
-        s
-          .setName("OpenCode")
-          .setDesc("Watch OpenCode's sessions (~/.local/share/opencode).")
-          .addToggle((t) => t.setValue(plugin.settings.agentOpencode).onChange((v) => save("agentOpencode", v)))
-      )
-      .addSetting((s) =>
-        s
-          .setName("Antigravity")
-          .setDesc("Watch Antigravity's conversations (~/.gemini/antigravity-cli).")
-          .addToggle((t) => t.setValue(plugin.settings.agentAntigravity).onChange((v) => save("agentAntigravity", v)))
-      )
-      .addSetting((s) =>
-        s
-          .setName("Cursor")
-          .setDesc("Watch Cursor's agent, in the app and the cursor-agent CLI (through its hooks, below).")
-          .addToggle((t) => t.setValue(plugin.settings.agentCursor).onChange((v) => save("agentCursor", v)))
-      )
-      .addSetting((s) =>
-        s
-          .setName("Cursor hooks")
+          .setName("Agents in linked projects")
           .setDesc(
-            "Adds hooks to Cursor (~/.cursor/hooks.json) that tell Muta when its agent starts, edits a note and " +
-              "stops. Cursor keeps no records Muta can read otherwise. Takes effect in new Cursor chats."
+            "Also count agents working anywhere in a project the vault links into: the git repository holding a " +
+              "folder the vault links to, though they edit no notes."
           )
+          .addToggle((t) => t.setValue(plugin.settings.agentLinkedProjects).onChange((v) => save("agentLinkedProjects", v)))
+      )
+
+    for (const kind of AGENTS)
+      ai.addSetting((s) =>
+        s
+          .setName(AGENT_NAMES[kind])
+          .setDesc(AGENT_HOOKS_SAY[kind])
           .addToggle((t) =>
-            t.setValue(plugin.agents.cursorHooksInstalled()).onChange((v) => {
+            t.setValue(plugin.agents.installed(kind)).onChange((v) => {
               try {
-                plugin.agents.setCursorHooks(v)
-                new Notice(v ? "Muta: Cursor hooks added." : "Muta: Cursor hooks taken out.")
+                plugin.agents.setHooks(kind, v)
+                new Notice(v ? `Muta: ${AGENT_NAMES[kind]}'s hooks added.` : `Muta: ${AGENT_NAMES[kind]}'s hooks taken out.`)
+                plugin.agents.poll()
               } catch (error) {
                 new Notice(`Muta: ${error.message}`)
                 t.setValue(!v)
@@ -3149,4 +3328,34 @@ class MutaSettings extends PluginSettingTab {
 }
 
 // For the tests (test/): the parts that don't need a window.
-module.exports.testing = { AgentWatch, bouncePath, rubberBand, within, BOUNCE_MAX, AGENT_STALE_MS, claudeHookEvent, cursorHookEvent, withHooks, withCursorHooks, changedLines, questionAnswer, agentPrompt, gitRoot, shellQuote, appleQuote, AGENT_LAUNCH, HOOK_MARK, CURSOR_HOOK_MARK }
+module.exports.testing = {
+  AgentWatch,
+  AGENTS,
+  agentEvent,
+  patchEdits,
+  hookScript,
+  withHookGroups,
+  withCursorHooks,
+  withAntigravityHooks,
+  CLAUDE_HOOKS,
+  CODEX_HOOKS,
+  HOOK_MARK,
+  CURSOR_HOOK_MARK,
+  OPENCODE_PLUGIN,
+  RUNNING_MIN,
+  bouncePath,
+  rubberBand,
+  within,
+  BOUNCE_MAX,
+  changedLines,
+  blocksWith,
+  innermost,
+  editLines,
+  keysOutline,
+  agentPrompt,
+  menuItems,
+  gitRoot,
+  shellQuote,
+  appleQuote,
+  AGENT_LAUNCH,
+}

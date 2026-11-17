@@ -1,0 +1,22 @@
+{"conversationId": "b98ec8a2-a121-49c4-8e45-113adaf6f2fc", "hookEventName": "SessionStart", "cwd": "{DIR}", "workspacePaths": ["{DIR}"]}
+{"conversationId": "b98ec8a2-a121-49c4-8e45-113adaf6f2fc", "hookEventName": "PreInvocation", "cwd": "{DIR}", "workspacePaths": ["{DIR}"]}
+{"conversationId": "b98ec8a2-a121-49c4-8e45-113adaf6f2fc", "hookEventName": "PreToolUse", "cwd": "{DIR}", "workspacePaths": ["{DIR}"], "toolCall": {"args": {"Path": "{DIR}/note.md"}, "id": "call_2880315247081909587", "name": "read_file"}, "stepIdx": 2}
+{"conversationId": "b98ec8a2-a121-49c4-8e45-113adaf6f2fc", "hookEventName": "PostToolUse", "cwd": "{DIR}", "workspacePaths": ["{DIR}"], "toolCall": {"args": {"Path": "{DIR}/note.md"}, "id": "call_2880315247081909587", "name": "read_file"}, "stepIdx": 2}
+{"conversationId": "b98ec8a2-a121-49c4-8e45-113adaf6f2fc", "hookEventName": "PostInvocation", "cwd": "{DIR}", "workspacePaths": ["{DIR}"]}
+{"conversationId": "b98ec8a2-a121-49c4-8e45-113adaf6f2fc", "hookEventName": "PreInvocation", "cwd": "{DIR}", "workspacePaths": ["{DIR}"]}
+{"conversationId": "b98ec8a2-a121-49c4-8e45-113adaf6f2fc", "hookEventName": "PreToolUse", "cwd": "{DIR}", "workspacePaths": ["{DIR}"], "toolCall": {"args": {"Path": "{DIR}/note.md", "Replacement": "hello world", "Target": "hello"}, "id": "call_6393925154127464488", "name": "edit_file"}, "stepIdx": 4}
+{"conversationId": "b98ec8a2-a121-49c4-8e45-113adaf6f2fc", "hookEventName": "PostToolUse", "cwd": "{DIR}", "workspacePaths": ["{DIR}"], "toolCall": {"args": {"Path": "{DIR}/note.md", "Replacement": "hello world", "Target": "hello"}, "id": "call_6393925154127464488", "name": "edit_file"}, "stepIdx": 4}
+{"conversationId": "b98ec8a2-a121-49c4-8e45-113adaf6f2fc", "hookEventName": "PostInvocation", "cwd": "{DIR}", "workspacePaths": ["{DIR}"]}
+{"conversationId": "b98ec8a2-a121-49c4-8e45-113adaf6f2fc", "hookEventName": "PreInvocation", "cwd": "{DIR}", "workspacePaths": ["{DIR}"]}
+{"conversationId": "b98ec8a2-a121-49c4-8e45-113adaf6f2fc", "hookEventName": "PreToolUse", "cwd": "{DIR}", "workspacePaths": ["{DIR}"], "toolCall": {"args": {"Content": "buy milk\n", "Overwrite": true, "Path": "{DIR}/todo.md"}, "id": "call_17002243823862257403", "name": "write_file"}, "stepIdx": 6}
+{"conversationId": "b98ec8a2-a121-49c4-8e45-113adaf6f2fc", "hookEventName": "PostToolUse", "cwd": "{DIR}", "workspacePaths": ["{DIR}"], "toolCall": {"args": {"Content": "buy milk\n", "Overwrite": true, "Path": "{DIR}/todo.md"}, "id": "call_17002243823862257403", "name": "write_file"}, "stepIdx": 6}
+{"conversationId": "b98ec8a2-a121-49c4-8e45-113adaf6f2fc", "hookEventName": "PostInvocation", "cwd": "{DIR}", "workspacePaths": ["{DIR}"]}
+{"conversationId": "b98ec8a2-a121-49c4-8e45-113adaf6f2fc", "hookEventName": "PreInvocation", "cwd": "{DIR}", "workspacePaths": ["{DIR}"]}
+{"conversationId": "b98ec8a2-a121-49c4-8e45-113adaf6f2fc", "hookEventName": "PreToolUse", "cwd": "{DIR}", "workspacePaths": ["{DIR}"], "toolCall": {"args": {"Path": "{DIR}/note.md"}, "id": "call_1455219901918100150", "name": "read_file"}, "stepIdx": 8}
+{"conversationId": "b98ec8a2-a121-49c4-8e45-113adaf6f2fc", "hookEventName": "PostToolUse", "cwd": "{DIR}", "workspacePaths": ["{DIR}"], "toolCall": {"args": {"Path": "{DIR}/note.md"}, "id": "call_1455219901918100150", "name": "read_file"}, "stepIdx": 8}
+{"conversationId": "b98ec8a2-a121-49c4-8e45-113adaf6f2fc", "hookEventName": "PostInvocation", "cwd": "{DIR}", "workspacePaths": ["{DIR}"]}
+{"conversationId": "b98ec8a2-a121-49c4-8e45-113adaf6f2fc", "hookEventName": "PreInvocation", "cwd": "{DIR}", "workspacePaths": ["{DIR}"]}
+{"conversationId": "b98ec8a2-a121-49c4-8e45-113adaf6f2fc", "hookEventName": "PreToolUse", "cwd": "{DIR}", "workspacePaths": ["{DIR}"], "toolCall": {"args": {"Path": "{DIR}/todo.md"}, "id": "call_8949828510932563792", "name": "read_file"}, "stepIdx": 10}
+{"conversationId": "b98ec8a2-a121-49c4-8e45-113adaf6f2fc", "hookEventName": "PostToolUse", "cwd": "{DIR}", "workspacePaths": ["{DIR}"], "toolCall": {"args": {"Path": "{DIR}/todo.md"}, "id": "call_8949828510932563792", "name": "read_file"}, "stepIdx": 10}
+{"conversationId": "b98ec8a2-a121-49c4-8e45-113adaf6f2fc", "hookEventName": "PostInvocation", "cwd": "{DIR}", "workspacePaths": ["{DIR}"]}
+{"conversationId": "b98ec8a2-a121-49c4-8e45-113adaf6f2fc", "hookEventName": "Stop", "cwd": "{DIR}", "workspacePaths": ["{DIR}"]}

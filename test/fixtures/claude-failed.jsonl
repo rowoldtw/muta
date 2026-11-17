@@ -1,0 +1,3 @@
+{"session_id": "052a23de-5d4c-4535-bce1-04a549254f49", "cwd": "{DIR}", "prompt_id": "05dd5260-4342-44da-8b55-d7f55e924ed2", "permission_mode": "auto", "hook_event_name": "UserPromptSubmit", "prompt": "hi"}
+{"session_id": "052a23de-5d4c-4535-bce1-04a549254f49", "cwd": "{DIR}", "prompt_id": "05dd5260-4342-44da-8b55-d7f55e924ed2", "effort": {"level": "high"}, "hook_event_name": "StopFailure", "error": "model_not_found", "last_assistant_message": "There's an issue with the selected model (claude-nonexistent-model-9). It may not exist or you may not have access to it."}
+{"session_id": "052a23de-5d4c-4535-bce1-04a549254f49", "cwd": "{DIR}", "prompt_id": "05dd5260-4342-44da-8b55-d7f55e924ed2", "hook_event_name": "SessionEnd", "reason": "other"}

@@ -13,7 +13,7 @@ Hovering a link shows its page in a small window that floats over every app, and
 > - [x] [Floating window](features/Phase%201/Floating%20window.md): Link previews open in a small window that floats over every app, on every Space, instead of a popover.
 > - [x] [Liquid Glass](features/Phase%201/Liquid%20Glass.md): The desktop shows through the window, blurred, behind a slightly darker page panel (macOS 26 or later).
 > - [x] [Edge bars](features/Phase%201/Edge%20bars.md): At rest the page sits in a thin border; when the cursor comes near an edge, that edge grows into a slim bar.
->   - [x] [Top bar](features/Phase%201/Top%20bar.md): The page's buttons and a close button; drag or two-finger swipe here to move the window.
+>   - [x] [Top bar](features/Phase%201/Top%20bar.md): The page's buttons, Muta's menu and a close button; drag or two-finger swipe here to move the window.
 >   - [x] [Bottom bar](features/Phase%201/Bottom%20bar.md): ‹ the note's name ›, stepping to the previous or next note in order.
 >   - [x] [Scroll rail](features/Phase%201/Scroll%20rail.md): A scroll rail on the right edge with a mark for each section: properties, callouts and headings.
 
@@ -94,8 +94,10 @@ Working in any vault and theme, and a look of its own. Planned as 1.3.0. Lines m
 >
 > - *Proposed:* Screen magnet targets, with UI showing where the window will land.
 > - *Proposed:* "Copper by shadcn" parody.
+
+> [!area] Agents (experimental)
+>
 > - [ ] [View running agents](features/Phase%203/View%20running%20agents.md): See the coding agents you have running, and what each is doing, from the floating window.
 > - [x] [Agent beam](features/Phase%203/Agent%20beam.md): While a local agent works in the vault, a beam of light in its colours rides round the window's edge, one per agent.
->   - [x] [Answer agent questions](features/Phase%203/Answer%20agent%20questions.md): When Claude Code asks you a question, answer it from the window: pick an option, or type your own.
->   - [x] [Send to agent](features/Phase%203/Send%20to%20agent.md): Send the note on show to a coding agent: it starts in Terminal, in the note's project, with the note as its first prompt.
->   - [x] [See what changed](features/Phase%203/See%20what%20changed.md): What an agent just changed on the page you're reading glows for a moment in its colour.
+>   - [x] [Send to agent](features/Phase%203/Send%20to%20agent.md): Send the note on show to a coding agent: it starts in Terminal, in the note's project, with an @ reference to the note.
+>   - [x] [Watch agents edit](features/Phase%203/Watch%20agents%20edit.md): On the note in the window, you watch an agent's edit happen: the old text tinted, then the new typing in behind a cursor in its colour.

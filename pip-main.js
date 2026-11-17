@@ -631,7 +631,8 @@ class Pip {
     const now = Date.now()
     const c = screen.getCursorScreenPoint()
     // Out, the whole window counts; in, the notch and a little around it.
-    const over = n.open ? inside(c, this.bounds()) || this.overMenu(c) : inside(c, n.rect, 4)
+    // A menu opened from it (More options, Muta's) holds it out until it closes.
+    const over = n.open ? inside(c, this.bounds()) || this.overMenu(c) || nativeMenuOpen(this.window.id) : inside(c, n.rect, 4)
     if (over) n.over = now
     const open = over || now < n.until || (n.open && now - n.over < LEAVE_MS)
     if (open === n.open) return
@@ -1197,6 +1198,8 @@ function menuBounds(windowBounds, pageButton, zoom, area) {
   return { x, y, width, height, from }
 }
 exports.menuBounds = menuBounds
+exports.holdForMenu = holdForMenu
+exports.nativeMenuOpen = nativeMenuOpen
 exports.MENU = MENU
 
 exports.create = (options) => {
@@ -1227,19 +1230,40 @@ exports.dispose = () => {
  * version takes over and a disposed one (null) leaves menus alone.
  */
 function patchMenuPopup() {
-  global.__mutaMenuPopup = (options) => {
+  global.__mutaMenuPopup = (options, menu) => {
     const target = global.__mutaMenuTarget
     global.__mutaMenuTarget = null
     if (!target || Date.now() - target.at > 500) return options
     const win = BrowserWindow.fromId(target.windowId)
-    return win && !win.isDestroyed() ? { ...(options || {}), window: win } : options
+    if (!win || win.isDestroyed()) return options
+    if (menu) holdForMenu(target.windowId, menu)
+    return { ...(options || {}), window: win }
   }
-  if (global.__mutaMenus) return
-  global.__mutaMenus = true
+  // Version 2 passes on the menu, so the window can stay out while it's open.
+  // (An earlier wrapper stays inside this one: it asks again, gets no target
+  // and leaves the options as they are.)
+  if (global.__mutaMenus === 2) return
+  global.__mutaMenus = 2
   const { Menu } = require("electron")
   const popup = Menu.prototype.popup
   Menu.prototype.popup = function (options) {
     const redirect = global.__mutaMenuPopup
-    return popup.call(this, redirect ? redirect(options) : options)
+    return popup.call(this, redirect ? redirect(options, this) : options)
   }
+}
+
+/** Notes that menu is open over window windowId, until it closes (nativeMenuOpen()). */
+function holdForMenu(windowId, menu) {
+  const open = (global.__mutaMenusOpen = global.__mutaMenusOpen || new Map())
+  open.set(windowId, (open.get(windowId) || 0) + 1)
+  menu.once("menu-will-close", () => {
+    const left = (open.get(windowId) || 1) - 1
+    if (left > 0) open.set(windowId, left)
+    else open.delete(windowId)
+  })
+}
+
+/** Whether a menu opened from the window windowId is open (a docked window stays out of the notch meanwhile). */
+function nativeMenuOpen(windowId) {
+  return !!(global.__mutaMenusOpen && global.__mutaMenusOpen.get(windowId))
 }

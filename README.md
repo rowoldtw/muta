@@ -26,7 +26,7 @@ Restart Obsidian and turn on **Muta**. To update, `git pull` and run the script 
 
 ## Settings
 
-Liquid Glass and its style, darkness, the key to hold while hovering (or none), showing on every Space, swiping to move, overscroll, marking the previewed note, the agent beam and following along (and which agents to watch), and **Order notes**: glob patterns (one per line) for the notes whose link lists set the bottom bar's order, for example `Roadmap/Phase */Phase *.md`. Without them it uses the note you hovered from.
+Liquid Glass and its style, darkness, the key to hold while hovering (or none), showing on every Space, swiping to move, overscroll, marking the previewed note, the agent beam (experimental: which agents to watch, each through its own hooks that Muta puts in, and whether agents anywhere in a project the vault links into count), and **Order notes**: glob patterns (one per line) for the notes whose link lists set the bottom bar's order, for example `Roadmap/Phase */Phase *.md`. Without them it uses the note you hovered from.
 
 "Toggle preview window" in the command palette switches back to Obsidian's own popovers.
 

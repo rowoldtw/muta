@@ -92,3 +92,30 @@ test("closed and opened again quickly, only the last open counts", async () => {
   expect(calls).toEqual(["open"])
   expect(open()).toBe(true)
 })
+
+test("a menu opened from the window holds it out until the menu closes, one count per menu", () => {
+  const { EventEmitter } = require("events")
+  const a = new EventEmitter()
+  const b = new EventEmitter()
+  expect(pip.nativeMenuOpen(7)).toBe(false)
+  pip.holdForMenu(7, a)
+  pip.holdForMenu(7, b)
+  expect(pip.nativeMenuOpen(7)).toBe(true)
+  expect(pip.nativeMenuOpen(8)).toBe(false)
+  a.emit("menu-will-close")
+  expect(pip.nativeMenuOpen(7)).toBe(true)
+  b.emit("menu-will-close")
+  b.emit("menu-will-close") // a second close says nothing more
+  expect(pip.nativeMenuOpen(7)).toBe(false)
+})
+
+test("the light on the buttons beside the notch: only each pill's lower outline, fading in from its middle", () => {
+  const { keysOutline } = require("./setup.js").testing
+  const svg = keysOutline([{ x: 10, y: 4, w: 60, h: 26 }], 200, 38)
+  const d = svg.match(/ d="([^"]+)"/)[1]
+  // From half way down the left side, round the bottom, up to half way on the right.
+  expect(d.startsWith("M10.5,17 ")).toBe(true)
+  expect(d.endsWith("L69.5,17")).toBe(true)
+  expect(d).toContain("L62,29.5")
+  expect(svg).toContain('stop-opacity="0"')
+})

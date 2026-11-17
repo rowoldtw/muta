@@ -20,8 +20,10 @@ Working in any vault and theme, and a look of its own. Planned as 1.3.0. Lines m
 >
 > - *Proposed:* Screen magnet targets, with UI showing where the window will land.
 > - *Proposed:* "Copper by shadcn" parody.
+
+> [!area] Agents (experimental)
+>
 > - [[View running agents]]
 > - [[Agent beam]]
->   - [[Answer agent questions]]
 >   - [[Send to agent]]
->   - [[See what changed]]
+>   - [[Watch agents edit]]

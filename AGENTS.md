@@ -26,7 +26,7 @@ An Obsidian plugin for macOS, plain JavaScript with no build step, plus two nati
 
 ## Tests
 
-`bun test` runs `test/`: the parts that don't need a window, outside Obsidian and Electron (`test/setup.js` stands in for their modules). Agent detection is tested against agents' records made up in a temporary home folder, the overscroll bounce's curve (`bouncePath()`), and the bottom bar menu's placement (`menuBounds()`) and opening and closing. CI runs them. Prefer a test here over checking something on the user's screen; add one with each fix to these parts, exporting what it needs through `module.exports.testing` (main.js) or `exports` (pip-main.js).
+`bun test` runs `test/`: the parts that don't need a window, outside Obsidian and Electron (`test/setup.js` stands in for their modules). Agent detection is tested against agents' hook events in a temporary home folder (real ones from a logged run of each agent in `test/fixtures`; log a new agent's the same way before supporting it), the overscroll bounce's curve (`bouncePath()`), and the bottom bar menu's placement (`menuBounds()`) and opening and closing. CI runs them. Prefer a test here over checking something on the user's screen; add one with each fix to these parts, exporting what it needs through `module.exports.testing` (main.js) or `exports` (pip-main.js).
 
 ## Working style
 

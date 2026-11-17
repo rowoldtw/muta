@@ -76,7 +76,7 @@ html.muta-root body.muta-window:not(.is-docked)::before {
 .muta-window.is-dragging {
   --pip-top: var(--pip-bar);
 }
-.muta-window:is(.is-near-bottom, .is-switcher-open, .is-menu-closing, .has-ask) {
+.muta-window:is(.is-near-bottom, .is-switcher-open, .is-menu-closing) {
   --pip-bottom: var(--pip-bottom-bar);
 }
 .muta-window.has-scroll:is(.is-near-right, .is-rail-open, .is-scrolling) {
@@ -347,9 +347,9 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
   background: rgb(0 0 0 / 0.14) !important;
 }
 /*
- * Beside the notch, two buttons a side, lined up with the page's edges:
- * back and forward on the left, edit and More options on the right, where
- * close would be (it's closed from the notch by taking it out first).
+ * Beside the notch, lined up with the page's edges: back and forward on the
+ * left, edit, Muta's menu and More options on the right, where close would
+ * be (it's closed from the notch by taking it out first).
  */
 .muta-window.is-docked .view-header {
   padding: 0 var(--pip-frame) !important;
@@ -366,7 +366,7 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
   order: 1;
   flex: 1;
 }
-.muta-window.is-docked .view-actions > .view-action:not(.muta-close) {
+.muta-window.is-docked .view-actions > .view-action:not(.muta-close, .muta-more) {
   order: 2;
   margin: 0 !important;
 }
@@ -379,9 +379,9 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
 }
 /*
  * The buttons beside the notch: back and forward joined in one hairline
- * border on the left, edit and More options each in their own on the right
- * (like the page panel's, no fill), brightening under the cursor. They stay
- * put: nothing about them animates but their colour.
+ * border on the left, edit, Muta's menu and More options in another on the
+ * right (like the page panel's, no fill), brightening under the cursor. They
+ * stay put: nothing about them animates but their colour.
  */
 .muta-window.is-docked .view-header {
   --icon-size: 15px;
@@ -394,7 +394,8 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
 }
 .muta-window.is-docked .view-header .clickable-icon {
   height: 26px;
-  min-width: 34px;
+  width: 30px;
+  min-width: 30px;
   justify-content: center;
   margin-inline: 2px !important;
   border-radius: 8px !important;
@@ -417,7 +418,7 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
   color: rgb(255 255 255 / 0.25) !important;
 }
 .muta-window.is-docked .view-header .muta-more {
-  min-width: 34px !important;
+  min-width: 30px !important;
   margin: 0 !important;
 }
 /*
@@ -434,22 +435,41 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
   left: calc(var(--muta-side) / 2);
   translate: -50% -50%;
 }
-.muta-window.is-docked .view-header .view-actions > .view-action:not(.muta-close, .muta-more, .muta-send),
-.muta-window.is-docked .view-header .muta-send,
-.muta-window.is-docked .view-header .muta-more {
+/* Edit, Muta's menu and More options: one pill, 90px wide, centred beside the notch. */
+.muta-window.is-docked .view-header .view-actions > .view-action:not(.muta-close),
+.muta-window.is-docked .view-header .muta-more.clickable-icon {
   position: absolute;
   top: 50%;
   translate: 0 -50%;
+  margin: 0 !important;
+  box-shadow: none !important;
 }
-/* Send to agent, edit and More options, as a row centred beside the notch. */
-.muta-window.is-docked .view-header .muta-send {
-  left: calc(100% - var(--muta-side) / 2 - 57px);
+.muta-window.is-docked .view-header .view-actions > .view-action:not(.muta-close, .muta-more, .muta-menu) {
+  left: calc(100% - var(--muta-side) / 2 - 45px);
+  border-radius: 8px 0 0 8px !important;
 }
-.muta-window.is-docked .view-header .view-actions > .view-action:not(.muta-close, .muta-more, .muta-send) {
-  left: calc(100% - var(--muta-side) / 2 - 19px);
+.muta-window.is-docked .view-header .muta-menu {
+  left: calc(100% - var(--muta-side) / 2 - 15px);
+  border-radius: 0 !important;
+  border-left: 1px solid rgb(255 255 255 / 0.09) !important;
 }
-.muta-window.is-docked .view-header .muta-more {
-  left: calc(100% - var(--muta-side) / 2 + 19px);
+.muta-window.is-docked .view-header .muta-more.clickable-icon {
+  left: calc(100% - var(--muta-side) / 2 + 15px);
+  border-radius: 0 8px 8px 0 !important;
+  border-left: 1px solid rgb(255 255 255 / 0.09) !important;
+}
+/* The pill's outline, drawn round all three from the middle one (they share no parent). */
+.muta-window.is-docked .view-header .muta-menu::before {
+  content: "";
+  position: absolute;
+  inset: 0 -30px 0 -31px;
+  border-radius: 8px;
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.09);
+  pointer-events: none;
+  transition: box-shadow 140ms ease-out;
+}
+.muta-window.is-docked .view-header:has(.view-actions > .view-action:not(.muta-close):hover, .muta-more:hover) .muta-menu::before {
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.18);
 }
 /* Back and forward: one pill, split by a hairline. */
 .muta-window.is-docked .view-header-nav-buttons {
@@ -521,7 +541,7 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
     right 240ms var(--pip-ease),
     opacity 160ms ease-out;
 }
-.muta-window:is(.is-near-bottom, .is-switcher-open, .is-menu-closing, .has-ask) .muta-switcher,
+.muta-window:is(.is-near-bottom, .is-switcher-open, .is-menu-closing) .muta-switcher,
 .muta-window.has-scroll:is(.is-near-right, .is-rail-open, .is-scrolling) .muta-rail {
   opacity: 1;
   pointer-events: auto;
@@ -746,6 +766,18 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
     muta-beam-turn 2.6s linear infinite,
     muta-beam-out 500ms ease forwards;
 }
+/*
+ * Waiting on you (an agent asking to be allowed something): its beam keeps
+ * turning in step with the others but breathes, dimming and brightening,
+ * until you answer. The turn and the fade-in keep their places in the list,
+ * so neither restarts; leaving wins over it.
+ */
+:is(.muta-agent-glow, .muta-agent-rim).is-waiting:not(.is-leaving) {
+  animation:
+    muta-beam-turn 2.6s linear infinite,
+    muta-beam-in 600ms ease both,
+    muta-beam-wait 1.4s ease-in-out infinite;
+}
 :is(.muta-agent-glow, .muta-agent-rim)[data-agent="claude"] {
   /* Claude's terracotta and warm oranges. */
   --muta-beam-colors: #d97757, #f2a072, #c15f3c, #f6c9a8, #e0895f, #b5523a, #d97757;
@@ -929,189 +961,117 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
   -webkit-mask: linear-gradient(to bottom, transparent var(--muta-notch-height, 38px), #000 calc(var(--muta-notch-height, 38px) + 48px));
 }
 /*
- * An agent asking you a question: the bottom bar stays open and says so in
- * the name's place, with a pulsing dot in its colour; clicking it opens the
- * question over the page, grown out of the button. The other agents' beams
- * carry on.
+ * The edges of the buttons beside the notch (its two pills) catch each
+ * beam's light the same way, round the same centre, the window's: an overlay
+ * in the top bar (so it shows only while the bar does) masked to the pills'
+ * outlines (main.js's --muta-keys-mask) and to the arc round the beam's head.
  */
-.muta-window,
-.muta-ask-panel,
-.muta-switcher-ask {
-  --muta-ask-color: #d97757;
+.muta-agent-rim.muta-agent-keys {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border-radius: 0;
+  --muta-rim-arc: conic-gradient(
+    from var(--muta-beam-from) at 50% 50vh,
+    transparent 0deg, transparent calc(var(--muta-beam-span) * 0.34),
+    rgb(255 255 255 / 0.15) calc(var(--muta-beam-span) * 0.46),
+    rgb(255 255 255 / 0.5) calc(var(--muta-beam-span) * 0.58),
+    #fff calc(var(--muta-beam-span) * 0.66),
+    rgb(255 255 255 / 0.5) calc(var(--muta-beam-span) * 0.74),
+    rgb(255 255 255 / 0.15) calc(var(--muta-beam-span) * 0.84),
+    transparent calc(var(--muta-beam-span) * 0.94)
+  );
 }
-:is(.muta-ask-panel, .muta-switcher-ask)[data-agent="codex"] { --muta-ask-color: #3b82f6; }
-:is(.muta-ask-panel, .muta-switcher-ask)[data-agent="opencode"] { --muta-ask-color: #10b981; }
-:is(.muta-ask-panel, .muta-switcher-ask)[data-agent="antigravity"] { --muta-ask-color: #4285f4; }
-:is(.muta-ask-panel, .muta-switcher-ask)[data-agent="cursor"] { --muta-ask-color: #d4d4d8; }
-.muta-switcher-ask {
-  display: none;
-  flex: 0 1 auto;
-  min-width: 0;
-  height: 24px;
-  margin-inline: auto;
-  padding: 0 10px 0 8px !important;
-  align-items: center;
-  gap: 6px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--muta-ask-color) 20%, transparent) !important;
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--muta-ask-color) 40%, transparent) !important;
-  color: rgb(var(--muta-ink) / 0.95);
-  font-size: 12px;
-  font-weight: 500;
-  cursor: default;
+.muta-window.is-docked .muta-agent-rim.muta-agent-keys {
+  -webkit-mask: none;
+  mask: none;
+  border-radius: 0;
 }
-.muta-switcher-ask-text {
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-.muta-window.has-ask .muta-switcher-ask {
-  display: flex;
-}
-.muta-window.has-ask .muta-switcher-title {
+.muta-window:not(.is-docked) .muta-agent-keys {
   display: none;
 }
-.muta-ask-dot {
-  flex: none;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--muta-ask-color);
-  box-shadow: 0 0 8px var(--muta-ask-color);
-  animation: muta-ask-dot 1.3s ease-in-out infinite;
+.muta-agent-keys::before,
+.muta-agent-keys::after {
+  padding: 0;
+  border-radius: 0;
+  background: conic-gradient(at 50% 50vh, var(--muta-beam-colors));
+  -webkit-mask: var(--muta-rim-arc), var(--muta-keys-mask, linear-gradient(transparent 0 0)) 0 0 / 100% 100% no-repeat;
+  -webkit-mask-composite: source-in;
+  mask: var(--muta-rim-arc), var(--muta-keys-mask, linear-gradient(transparent 0 0)) 0 0 / 100% 100% no-repeat;
+  mask-composite: intersect;
 }
-@keyframes muta-ask-dot {
-  50% {
-    opacity: 0.35;
-  }
-}
-/* The question, over the page above the bottom bar. */
-.muta-ask-panel {
-  position: fixed;
-  z-index: 30;
-  left: calc(var(--pip-frame) + 8px);
-  right: calc(var(--pip-right) + 8px);
-  bottom: calc(var(--pip-bottom) + 6px);
-  max-height: calc(100vh - var(--pip-top) - var(--pip-bottom) - 20px);
-  overflow-y: auto;
-  display: none;
-  flex-direction: column;
-  gap: 12px;
-  padding: 14px;
-  border-radius: 12px;
-  background: var(--pip-popout-bg);
-  box-shadow:
-    inset 0 0 0 0.5px rgb(var(--muta-ink) / 0.12),
-    var(--pip-popout-shadow);
-  color: rgb(var(--muta-ink) / 0.92);
-  font-size: 13px;
-}
-.muta-window.is-ask-open .muta-ask-panel {
-  display: flex;
-}
-.muta-ask-agent {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  color: rgb(var(--muta-ink) / 0.55);
-  font-size: 11px;
-  font-weight: 600;
-}
-.muta-ask-question {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-}
-.muta-ask-text {
-  font-weight: 600;
-  line-height: 1.35;
-}
-.muta-ask-options {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.muta-ask-option {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 1px;
-  height: auto !important;
-  padding: 7px 10px !important;
-  border-radius: 8px;
-  background: rgb(var(--muta-ink) / 0.05) !important;
-  box-shadow: inset 0 0 0 1px rgb(var(--muta-ink) / 0.08) !important;
-  color: rgb(var(--muta-ink) / 0.9) !important;
-  text-align: left;
-  white-space: normal;
-  cursor: default;
-}
-.muta-ask-option:hover {
-  background: rgb(var(--muta-ink) / 0.09) !important;
-}
-.muta-ask-option.is-chosen {
-  background: color-mix(in srgb, var(--muta-ask-color) 22%, transparent) !important;
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--muta-ask-color) 60%, transparent) !important;
-}
-.muta-ask-label {
-  font-weight: 600;
-  font-size: 12.5px;
-}
-.muta-ask-description {
-  color: rgb(var(--muta-ink) / 0.55);
-  font-size: 11.5px;
-}
-.muta-ask-other {
-  height: 30px !important;
-  padding: 0 10px !important;
-  border-radius: 8px !important;
-  background: rgb(0 0 0 / 0.2) !important;
-  border: 1px solid rgb(var(--muta-ink) / 0.1) !important;
-  font-size: 12.5px !important;
-}
-.muta-ask-send {
-  align-self: flex-end;
-  height: 30px;
-  padding: 0 18px !important;
-  border-radius: 9px;
-  background: var(--muta-ask-color) !important;
-  color: #fff !important;
-  font-weight: 600;
-  box-shadow: none !important;
-  cursor: default;
-}
-.muta-ask-send:disabled {
-  opacity: 0.4;
-}
-@media (prefers-reduced-motion: reduce) {
-  .muta-ask-dot {
-    animation: none;
-  }
+.muta-agent-keys::before {
+  opacity: 0.9;
 }
 /*
- * See what changed: what an agent just changed glows in its colour for a
- * moment, the text itself lit and haloed, fading back.
+ * Watching agents edit (main.js's onAgentEdit()): what an agent is about to
+ * replace is tinted in its colour and struck through; then the new text
+ * types in word by word behind a cursor in its colour, which blinks twice
+ * at the end and goes.
  */
-.muta-window .muta-changed {
-  --muta-change-color: #f2a072;
-  animation: muta-changed 3.6s cubic-bezier(0.2, 0, 0, 1) forwards;
+.muta-window [data-muta-agent] { --muta-edit-color: #e0895f; }
+.muta-window [data-muta-agent="codex"] { --muta-edit-color: #60a5fa; }
+.muta-window [data-muta-agent="opencode"] { --muta-edit-color: #34d399; }
+.muta-window [data-muta-agent="antigravity"] { --muta-edit-color: #8ab4f8; }
+.muta-window [data-muta-agent="cursor"] { --muta-edit-color: #d4d4d8; }
+.muta-window .muta-edit-old {
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--muta-edit-color) 16%, transparent);
+  text-decoration: line-through color-mix(in srgb, var(--muta-edit-color) 70%, transparent);
+  opacity: 0.75;
+  transition:
+    background-color 200ms ease-out,
+    opacity 200ms ease-out;
 }
-.muta-window .muta-changed[data-muta-changed="codex"] { --muta-change-color: #7dd3fc; }
-.muta-window .muta-changed[data-muta-changed="opencode"] { --muta-change-color: #6ee7b7; }
-.muta-window .muta-changed[data-muta-changed="antigravity"] { --muta-change-color: #8ab4f8; }
-.muta-window .muta-changed[data-muta-changed="cursor"] { --muta-change-color: #e4e4e7; }
-@keyframes muta-changed {
-  0%,
-  25% {
-    color: color-mix(in srgb, var(--muta-change-color) 70%, rgb(var(--muta-ink)));
-    text-shadow:
-      0 0 10px color-mix(in srgb, var(--muta-change-color) 85%, transparent),
-      0 0 22px color-mix(in srgb, var(--muta-change-color) 45%, transparent);
+/* What an edit replaced, when the page had the change before Muta heard of it: shown struck through, then gone. */
+.muta-window .muta-edit-ghost {
+  margin-right: 0.4em;
+  border-radius: 4px;
+  color: color-mix(in srgb, var(--muta-edit-color) 80%, rgb(var(--muta-ink)));
+  background: color-mix(in srgb, var(--muta-edit-color) 16%, transparent);
+  text-decoration: line-through;
+  animation:
+    muta-type-in 160ms ease-out both,
+    muta-ghost-out 300ms ease-in forwards;
+}
+@keyframes muta-ghost-out {
+  to {
+    opacity: 0;
   }
-  100% {
-    text-shadow:
-      0 0 10px transparent,
-      0 0 22px transparent;
+}
+.muta-window .muta-typed {
+  animation: muta-type-in 160ms ease-out both;
+}
+@keyframes muta-type-in {
+  from {
+    opacity: 0;
+  }
+}
+.muta-window .markdown-preview-view:has(> .muta-caret) {
+  position: relative;
+}
+.muta-window .muta-caret {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 2;
+  width: 2px;
+  border-radius: 1px;
+  pointer-events: none;
+  background: var(--muta-edit-color);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--muta-edit-color) 70%, transparent);
+}
+.muta-window .muta-caret.is-done {
+  animation: muta-caret-blink 1.1s steps(1) infinite;
+}
+.muta-window .muta-caret.is-leaving {
+  animation: none;
+  opacity: 0;
+  transition: opacity 300ms ease-out;
+}
+@keyframes muta-caret-blink {
+  50% {
+    opacity: 0;
   }
 }
 @keyframes muta-beam-turn {
@@ -1129,6 +1089,11 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
     opacity: 0;
   }
 }
+@keyframes muta-beam-wait {
+  50% {
+    opacity: 0.25;
+  }
+}
 /* Reduce motion: the beams hold still, and come and go without fading or sliding. */
 @media (prefers-reduced-motion: reduce) {
   .muta-agent-glow,
@@ -1138,6 +1103,18 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
   }
   :is(.muta-agent-glow, .muta-agent-rim).is-leaving {
     display: none;
+  }
+  /* Watching agents edit: no typing (main.js), no fades; the cursor stands a moment and goes. */
+  .muta-window .muta-edit-old {
+    transition: none;
+  }
+  .muta-window .muta-caret.is-done {
+    animation: none;
+  }
+  /* Waiting on you, still: dimmed instead of breathing. */
+  :is(.muta-agent-glow, .muta-agent-rim).is-waiting {
+    animation: none;
+    opacity: 0.4;
   }
 }
 

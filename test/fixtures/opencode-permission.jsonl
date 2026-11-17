@@ -1,0 +1,5 @@
+{"type": "session.execution.started", "sessionID": "ses_e18fb700affeq4hebP21hajU7v", "directory": "{DIR}"}
+{"type": "tool", "tool": "shell", "sessionID": "ses_e18fb700affeq4hebP21hajU7v", "directory": "{DIR}"}
+{"type": "permission.asked", "sessionID": "ses_e18fb700affeq4hebP21hajU7v", "directory": "{DIR}"}
+{"type": "permission.replied", "sessionID": "ses_e18fb700affeq4hebP21hajU7v", "directory": "{DIR}"}
+{"type": "session.execution.interrupted", "sessionID": "ses_e18fb700affeq4hebP21hajU7v", "directory": "{DIR}"}

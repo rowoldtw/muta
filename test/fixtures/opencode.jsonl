@@ -1,0 +1,7 @@
+{"type": "session.execution.started", "sessionID": "ses_e192c4e8affeISkutMy4o51nxx", "directory": "{DIR}"}
+{"type": "tool", "tool": "read", "sessionID": "ses_e192c4e8affeISkutMy4o51nxx", "directory": "{DIR}"}
+{"type": "tool", "tool": "edit", "sessionID": "ses_e192c4e8affeISkutMy4o51nxx", "directory": "{DIR}", "input": {"path": "{DIR}/note.md", "oldString": "hello", "newString": "hello world"}}
+{"type": "tool", "tool": "write", "sessionID": "ses_e192c4e8affeISkutMy4o51nxx", "directory": "{DIR}", "input": {"path": "{DIR}/todo.md", "content": "buy milk\n"}}
+{"type": "tool", "tool": "read", "sessionID": "ses_e192c4e8affeISkutMy4o51nxx", "directory": "{DIR}"}
+{"type": "tool", "tool": "read", "sessionID": "ses_e192c4e8affeISkutMy4o51nxx", "directory": "{DIR}"}
+{"type": "session.execution.succeeded", "sessionID": "ses_e192c4e8affeISkutMy4o51nxx", "directory": "{DIR}"}
