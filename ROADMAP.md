@@ -6,7 +6,7 @@ Phases are rough order, not releases. Each feature's file in [features/](feature
 
 ## Phase 1: The floating window
 
-Hovering a link shows its page in a small window that floats over every app, and moves like picture in picture. Shipped in 0.1.0, the first release as Muta (Floating Preview 1.1.0 before it).
+Hovering a link shows its page in a small window that floats over every app, and moves like picture in picture. Shipped in 0.1.0, the first release as Muta (Floating Preview 1.1.0 before it). It also holds what were Phases 2 and 3: making it feel native (borderless chrome, haptics, a tuck that holds up everywhere), working in any vault and theme, the notch, and agents (experimental). A prototype of tuck haptics and the magnet tuck (taken back out) is on the `backup-dev` branch. Lines marked *Proposed* come from the Notion list and don't have files yet.
 
 > [!area] Window
 >
@@ -17,11 +17,30 @@ Hovering a link shows its page in a small window that floats over every app, and
 >   - [x] [Bottom bar](features/Phase%201/Bottom%20bar.md): ‹ the note's name ›, stepping to the previous or next note in order.
 >   - [x] [Scroll rail](features/Phase%201/Scroll%20rail.md): A scroll rail on the right edge with a mark for each section: properties, callouts and headings.
 
+> [!area] Chrome
+>
+> - [x] [Borderless top bar](features/Phase%201/Borderless%20top%20bar.md): No traffic lights: the menu sits in the top bar's left corner and the close button in the right.
+> - [x] [Menus at the button](features/Phase%201/Menus%20at%20the%20button.md): Menus opened from the preview (More options, a right-click) open at the button, over the preview window.
+> - [x] [Settings cards](features/Phase%201/Settings%20cards.md): Each settings group (Look, Behaviour, Order) sits in one card, like Obsidian's own settings.
+> - [x] [Light mode](features/Phase%201/Light%20mode.md): The window follows Obsidian's light or dark theme: a pale frame and light glass in light mode.
+> - [x] [Follows accessibility settings](features/Phase%201/Follows%20accessibility%20settings.md): With Reduce transparency the window turns solid, and with Increase contrast its page and popouts get clear edges.
+> - *Proposed:* Links clicked in the preview open in Obsidian instead of replacing the preview's page.
+
 > [!area] Moving it
 >
 > - [x] [Snap to spots](features/Phase%201/Snap%20to%20spots.md): Throw the window and it springs to the nearest of five spots: the corners and the top middle.
 > - [x] [Tuck to the side](features/Phase%201/Tuck%20to%20the%20side.md): Throw the window past the left or right edge to tuck it behind a thin handle; click the handle or pull it away to bring it back.
 > - [x] [Screen limits](features/Phase%201/Screen%20limits.md): The window stops at the menu bar, rubber-bands past the bottom of the screen, and remembers where you left it.
+> - [ ] [Pinch to resize](features/Phase%201/Pinch%20to%20resize.md): Pinch on the window to resize it like macOS picture in picture, keeping its shape and docked corner.
+> - [x] [Swipes stop at the screen edge](features/Phase%201/Swipes%20stop%20at%20the%20screen%20edge.md): Swiping the window to a screen's edge stops it there instead of losing it.
+> - *Proposed:* The window stays in the same place while it opens and closes.
+
+> [!area] Tucking
+>
+> - [ ] [Tuck haptics](features/Phase%201/Tuck%20haptics.md): A tap on the trackpad as a tucking window lands at the side.
+> - [ ] [Magnet tuck](features/Phase%201/Magnet%20tuck.md): Pushed a quarter of the way past a side while held, a magnet pulls the window into its tucked place.
+> - [x] [Handle slides along its side](features/Phase%201/Handle%20slides%20along%20its%20side.md): Drag or swipe a tucked handle up and down its side; pull it 40px away to bring the window out.
+> - [ ] [Tucked window stays put across Spaces](features/Phase%201/Tucked%20window%20stays%20put%20across%20Spaces.md): A tucked window rests as just its handle, fully on screen, so switching Spaces no longer pulls it partway back.
 
 > [!area] Pages
 >
@@ -36,6 +55,8 @@ Hovering a link shows its page in a small window that floats over every app, and
 > - [x] [Mark the previewed note](features/Phase%201/Mark%20the%20previewed%20note.md): Links to the previewed note turn yellow in Obsidian's other windows and in the file list.
 > - [x] [Toggle preview window](features/Phase%201/Toggle%20preview%20window.md): "Toggle preview window" in the command palette switches back to Obsidian's own popovers.
 > - [x] [Settings](features/Phase%201/Settings.md): Settings for the window's look, how it behaves, agents and order notes, in Obsidian's settings under Muta.
+> - [ ] [One preview per vault](features/Phase%201/One%20preview%20per%20vault.md): Each vault keeps its own preview, so another vault running another version doesn't take over this one.
+> - [x] [Hold a key to preview](features/Phase%201/Hold%20a%20key%20to%20preview.md): Hovering a link opens the window only while a key is held (⌘ by default), so it doesn't open by accident.
 
 > [!area] Shipping
 >
@@ -43,50 +64,15 @@ Hovering a link shows its page in a small window that floats over every app, and
 > - [x] [Install from source](features/Phase%201/Install%20from%20source.md): `scripts/install.sh` builds the native parts for this Mac and links a vault's plugin folder back to the repo.
 > - [x] [Release workflow](features/Phase%201/Release%20workflow.md): Pushing a version tag builds universal native parts, writes their checksums into `main.js` and publishes the release.
 
-## Phase 2: Feel
-
-Making the window feel native: borderless chrome, haptics, and a tuck that holds up everywhere. Planned as 0.2.0; the borderless top bar, menus at the button and settings cards shipped early, in 0.1.0, and light mode, accessibility, the hover key and the handle and swipe fixes are done on `dev`. A prototype of tuck haptics and the magnet tuck (taken back out) is on the `backup-dev` branch. Lines marked *Proposed* come from the Notion list and don't have files yet.
-
-> [!area] Chrome
->
-> - [x] [Borderless top bar](features/Phase%202/Borderless%20top%20bar.md): No traffic lights: the menu sits in the top bar's left corner and the close button in the right.
-> - [x] [Menus at the button](features/Phase%202/Menus%20at%20the%20button.md): Menus opened from the preview (More options, a right-click) open at the button, over the preview window.
-> - [x] [Settings cards](features/Phase%202/Settings%20cards.md): Each settings group (Look, Behaviour, Order) sits in one card, like Obsidian's own settings.
-> - [x] [Light mode](features/Phase%202/Light%20mode.md): The window follows Obsidian's light or dark theme: a pale frame and light glass in light mode.
-> - [x] [Follows accessibility settings](features/Phase%202/Follows%20accessibility%20settings.md): With Reduce transparency the window turns solid, and with Increase contrast its page and popouts get clear edges.
-> - *Proposed:* Links clicked in the preview open in Obsidian instead of replacing the preview's page.
-
-> [!area] Tucking
->
-> - [ ] [Tuck haptics](features/Phase%202/Tuck%20haptics.md): A tap on the trackpad as a tucking window lands at the side.
-> - [ ] [Magnet tuck](features/Phase%202/Magnet%20tuck.md): Pushed a quarter of the way past a side while held, a magnet pulls the window into its tucked place.
-> - [x] [Handle slides along its side](features/Phase%202/Handle%20slides%20along%20its%20side.md): Drag or swipe a tucked handle up and down its side; pull it 40px away to bring the window out.
-> - [ ] [Tucked window stays put across Spaces](features/Phase%202/Tucked%20window%20stays%20put%20across%20Spaces.md): A tucked window rests as just its handle, fully on screen, so switching Spaces no longer pulls it partway back.
-
-> [!area] Moving it
->
-> - [ ] [Pinch to resize](features/Phase%202/Pinch%20to%20resize.md): Pinch on the window to resize it like macOS picture in picture, keeping its shape and docked corner.
-> - [x] [Swipes stop at the screen edge](features/Phase%202/Swipes%20stop%20at%20the%20screen%20edge.md): Swiping the window to a screen's edge stops it there instead of losing it.
-> - *Proposed:* The window stays in the same place while it opens and closes.
-
-> [!area] Obsidian
->
-> - [ ] [One preview per vault](features/Phase%202/One%20preview%20per%20vault.md): Each vault keeps its own preview, so another vault running another version doesn't take over this one.
-> - [x] [Hold a key to preview](features/Phase%202/Hold%20a%20key%20to%20preview.md): Hovering a link opens the window only while a key is held (⌘ by default), so it doesn't open by accident.
-
-## Phase 3: Everywhere
-
-Working in any vault and theme, and a look of its own. Planned as 1.3.0. Lines marked *Proposed* come from the Notion list and don't have files yet.
-
 > [!area] Any vault
 >
-> - [ ] [Any theme](features/Phase%203/Any%20theme.md): The window looks and behaves the same in any Obsidian theme, while the page itself follows the theme.
+> - [ ] [Any theme](features/Phase%201/Any%20theme.md): The window looks and behaves the same in any Obsidian theme, while the page itself follows the theme.
 > - *Proposed:* Find which other plugins' and themes' behaviors affect the preview, starting from an empty vault.
-> - [ ] [Tests without the screen](features/Phase%203/Tests%20without%20the%20screen.md): Tests that check the plugin without opening its window or touching the screen.
+> - [ ] [Tests without the screen](features/Phase%201/Tests%20without%20the%20screen.md): Tests that check the plugin without opening its window or touching the screen.
 
 > [!area] Identity
 >
-> - [x] [Morph into the notch](features/Phase%203/Morph%20into%20the%20notch.md): At the top middle of a MacBook with a notch, the window hangs from the notch, morphs into it, and grows back out when you hover it.
+> - [x] [Morph into the notch](features/Phase%201/Morph%20into%20the%20notch.md): At the top middle of a MacBook with a notch, the window hangs from the notch, morphs into it, and grows back out when you hover it.
 > - *Proposed:* Settings panel changes.
 > - *Proposed:* Updated page navigation styling.
 
@@ -97,7 +83,8 @@ Working in any vault and theme, and a look of its own. Planned as 1.3.0. Lines m
 
 > [!area] Agents (experimental)
 >
-> - [ ] [View running agents](features/Phase%203/View%20running%20agents.md): See the coding agents you have running, and what each is doing, from the floating window.
-> - [x] [Agent beam](features/Phase%203/Agent%20beam.md): While a local agent works in the vault, a beam of light in its colours rides round the window's edge, one per agent.
->   - [x] [Send to agent](features/Phase%203/Send%20to%20agent.md): Send the note on show to a coding agent: it starts in Terminal, in the note's project, with an @ reference to the note.
->   - [x] [Watch agents edit](features/Phase%203/Watch%20agents%20edit.md): On the note in the window, you watch an agent's edit happen: the old text tinted, then the new typing in behind a cursor in its colour.
+> - [ ] [View running agents](features/Phase%201/View%20running%20agents.md): See the coding agents you have running, and what each is doing, from the floating window.
+> - [x] [Agent beam](features/Phase%201/Agent%20beam.md): While a local agent works in the vault, a beam of light in its colours rides round the window's edge, one per agent.
+>   - [x] [Send to agent](features/Phase%201/Send%20to%20agent.md): Send the note on show to a coding agent: it starts in Terminal, in the note's project, with an @ reference to the note.
+>   - [x] [Watch agents edit](features/Phase%201/Watch%20agents%20edit.md): On the note in the window, you watch an agent's edit happen: the old text tinted, then the new typing in behind a cursor in its colour.
+>   - [x] [Done and failed glow](features/Phase%201/Done%20and%20failed%20glow.md): When an agent finishes in the vault, the whole window's border glows green for a moment, or red if its turn failed.

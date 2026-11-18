@@ -23,21 +23,6 @@ properties:
     displayName: Sub-features
 views:
   - type: kanban
-    name: Phase 2
-    filters:
-      and:
-        - file.inFolder("features/Phase 2")
-    groupBy:
-      property: status
-      direction: ASC
-    groupOrder:
-      - idea
-      - planned
-      - in-progress
-      - done
-    order:
-      - file.name
-  - type: kanban
     name: Phase 1
     filters:
       and:
