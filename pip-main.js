@@ -166,6 +166,8 @@ const SHOULDER = 14
 /** In the notch: its shoulders, and its bottom corners (px). */
 const NOTCH_SHOULDER = 6
 const NOTCH_RADIUS = 10
+/** How far (px) the light round the notch reaches past it (an agent finishing while the window's in). */
+const NOTCH_RING = 3
 /** Docked, the blur: like Siri's, a macOS material blurred far more than usual (px), without its grey tint or glare. */
 const DOCKED_MATERIAL = 13
 const DOCKED_BLUR = 40
@@ -577,6 +579,8 @@ class Pip {
     this.shapeGlass(this.notch.out, 0)
     const out = hangingPath(this.notch.out)
     const into = hangingPath(this.notch.into)
+    // Just round the notch: an agent finishing lights it while the window's in (styles.css).
+    const ring = hangingPath(shape(left - NOTCH_RING, left + rect.width + NOTCH_RING, LIFT + rect.height + NOTCH_RING, NOTCH_SHOULDER + NOTCH_RING, NOTCH_RADIUS + NOTCH_RING))
     this.renderNotch(`const h = document.documentElement.style
       h.setProperty("--muta-lift", "${LIFT}px")
       h.setProperty("--muta-shoulder", "${SHOULDER}px")
@@ -584,11 +588,8 @@ class Pip {
       h.setProperty("--muta-notch-height", "${rect.height}px")
       h.setProperty("--muta-shape-out", ${JSON.stringify(`path("${out}")`)})
       h.setProperty("--muta-shape-in", ${JSON.stringify(`path("${into}")`)})
-      // Dark in either theme: a light theme's page is shown dark while docked.
-      if (b.classList.contains("theme-light")) {
-        b.classList.replace("theme-light", "theme-dark")
-        b.dataset.mutaLight = "true"
-      }
+      h.setProperty("--muta-shape-ring", ${JSON.stringify(`path("${ring}")`)})
+      // Dark in either theme (main.js keeps it so while docked).
       b.classList.add("is-docked")`)
     this.pollNotch()
   }
@@ -610,11 +611,8 @@ class Pip {
     this.window.setIgnoreMouseEvents(false)
     this.window.setHasShadow(true)
     this.applyGlass()
-    this.renderNotch(`b.classList.remove("is-docked", "is-notched")
-      if (b.dataset.mutaLight) {
-        b.classList.replace("theme-dark", "theme-light")
-        delete b.dataset.mutaLight
-      }`)
+    // Back in Obsidian's theme (main.js).
+    this.renderNotch(`b.classList.remove("is-docked", "is-notched")`)
   }
 
   /** A link was hovered: a docked window comes out to show it. */
@@ -844,6 +842,9 @@ class Pip {
   onMenu(what, arg) {
     if (what === "pick") {
       this.closeMenu()
+      // Docked, a pick low in the list leaves the cursor below the window:
+      // it stays out a moment (as for a hovered link) to show the page picked.
+      this.peek()
       this.renderNotch(`if (window.mutaMenuPick) window.mutaMenuPick(${Number(arg)})`)
     } else if (what === "leave") {
       clearTimeout(this.menuLeave)
@@ -1201,6 +1202,7 @@ exports.menuBounds = menuBounds
 exports.holdForMenu = holdForMenu
 exports.nativeMenuOpen = nativeMenuOpen
 exports.MENU = MENU
+exports.Pip = Pip
 
 exports.create = (options) => {
   if (global.__muta) global.__muta.dispose()

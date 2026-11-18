@@ -56,6 +56,19 @@ html.muta-root body.muta-window .mod-root {
   --muta-panel: rgb(255 255 255 / 0.45);
   --muta-ink: 0 0 0;
 }
+/*
+ * Docked at the notch it's dark in either theme: main.js keeps the page in
+ * theme-dark while it's docked, and should a light theme slip in, its own
+ * colours stay dark here.
+ */
+.muta-window.is-docked.theme-light {
+  --pip-popout-bg: rgb(30 30 32);
+  --pip-popout-border: rgb(255 255 255 / 0.09);
+  --pip-popout-shadow: 0 8px 24px rgb(0 0 0 / 0.4);
+  --muta-frame: 44 44 46;
+  --muta-panel: rgb(0 0 0 / 0.3);
+  --muta-ink: 255 255 255;
+}
 html.muta-root body.muta-window {
   background: transparent !important;
 }
@@ -491,6 +504,24 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
 }
 .muta-window.is-docked .view-header .view-header-nav-buttons > .clickable-icon:first-child {
   border-radius: 8px 0 0 8px !important;
+}
+/*
+ * The bottom bar's buttons, docked: the tint is clearest down here, so over
+ * a white window below their light text would wash out. Each sits on a soft
+ * dark fill with the hairline of the buttons beside the notch, to match them.
+ */
+.muta-window.is-docked :is(.muta-switcher-step, .muta-switcher-title) {
+  border-radius: 8px;
+  background: rgb(0 0 0 / 0.22) !important;
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.09) !important;
+  transition:
+    background-color 140ms ease-out,
+    box-shadow 140ms ease-out;
+}
+.muta-window.is-docked :is(.muta-switcher-step, .muta-switcher-title):hover,
+.muta-window.is-docked.is-switcher-open .muta-switcher-title {
+  background: rgb(0 0 0 / 0.3) !important;
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.18) !important;
 }
 /* The top bar is the band beside the notch; the note's name would sit behind the notch. */
 .muta-window.is-docked .view-header {
@@ -987,8 +1018,9 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
   mask: none;
   border-radius: 0;
 }
+/* Hidden, not taken out: taken out and shown again, its turn would start over, out of step with its beam. */
 .muta-window:not(.is-docked) .muta-agent-keys {
-  display: none;
+  visibility: hidden;
 }
 .muta-agent-keys::before,
 .muta-agent-keys::after {
@@ -1002,6 +1034,151 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
 }
 .muta-agent-keys::before {
   opacity: 0.9;
+}
+/*
+ * Done or failed (main.js's flash()): an agent's turn ending, or one of
+ * Muta's one-off actions. The whole border glows, green or red, round the
+ * page (a ring and a haze into it, like the beams'), on the window's outer
+ * edge and on the buttons beside the notch; it fades in, holds and fades
+ * out, and the beams give way to it while it lasts. Masks, no filters.
+ */
+.muta-flash {
+  --muta-flash: 48 209 88;
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  border-radius: inherit;
+  pointer-events: none;
+  animation: muta-flash 1600ms ease both;
+}
+.muta-flash[data-outcome="failed"] {
+  --muta-flash: 255 69 58;
+}
+.muta-window.theme-light:not(.is-docked) .muta-flash {
+  --muta-flash: 40 180 70;
+}
+.muta-window.theme-light:not(.is-docked) .muta-flash[data-outcome="failed"] {
+  --muta-flash: 230 50 40;
+}
+.muta-flash::before,
+.muta-flash::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: rgb(var(--muta-flash));
+}
+/* The ring, at the page's edge. */
+.muta-flash::after {
+  padding: 1.5px;
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+}
+/* The haze, fading into the page from every edge. */
+.muta-flash::before {
+  --muta-flash-fade: #fff 0, rgb(255 255 255 / 0.5) 8px, rgb(255 255 255 / 0.2) 22px, rgb(255 255 255 / 0.06) 40px, transparent 56px;
+  -webkit-mask:
+    linear-gradient(to bottom, var(--muta-flash-fade)),
+    linear-gradient(to top, var(--muta-flash-fade)),
+    linear-gradient(to right, var(--muta-flash-fade)),
+    linear-gradient(to left, var(--muta-flash-fade));
+  -webkit-mask-composite: source-over;
+  mask:
+    linear-gradient(to bottom, var(--muta-flash-fade)),
+    linear-gradient(to top, var(--muta-flash-fade)),
+    linear-gradient(to right, var(--muta-flash-fade)),
+    linear-gradient(to left, var(--muta-flash-fade));
+  mask-composite: add;
+  opacity: 0.4;
+}
+/* The window's outer edge. */
+.muta-flash.muta-flash-rim {
+  position: fixed;
+  z-index: 35;
+  border-radius: var(--pip-radius);
+}
+.muta-flash-rim::before {
+  display: none;
+}
+.muta-flash-rim::after {
+  padding: 1px;
+  opacity: 0.8;
+}
+.muta-window.is-docked .muta-flash-rim {
+  border-radius: 0 0 var(--pip-radius) var(--pip-radius);
+  -webkit-mask: linear-gradient(to bottom, transparent var(--muta-notch-height, 38px), #000 calc(var(--muta-notch-height, 38px) + 48px));
+}
+/* The buttons beside the notch: their lower outlines (main.js's --muta-keys-mask). */
+.muta-flash.muta-flash-keys {
+  z-index: 1;
+  border-radius: 0;
+}
+.muta-window:not(.is-docked) .muta-flash-keys,
+.muta-flash-keys::after {
+  display: none;
+}
+.muta-flash-keys::before {
+  border-radius: 0;
+  -webkit-mask: var(--muta-keys-mask, linear-gradient(transparent 0 0)) 0 0 / 100% 100% no-repeat;
+  mask: var(--muta-keys-mask, linear-gradient(transparent 0 0)) 0 0 / 100% 100% no-repeat;
+  opacity: 1;
+}
+@keyframes muta-flash {
+  0% {
+    opacity: 0;
+  }
+  12%,
+  60% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+/* The beams give way: their layers fade (their own opacity is their animations'), and come back as it fades. */
+.muta-agent-glow::after,
+.muta-agent-haze,
+.muta-agent-bloom,
+.muta-agent-rim::before,
+.muta-agent-rim::after {
+  transition: opacity 300ms ease;
+}
+.muta-window.is-flashing .muta-agent-glow::after,
+.muta-window.is-flashing .muta-agent-haze,
+.muta-window.is-flashing .muta-agent-bloom,
+.muta-window.is-flashing .muta-agent-rim::before,
+.muta-window.is-flashing .muta-agent-rim::after {
+  opacity: 0;
+}
+/*
+ * In the notch, a thin ring of it lights just round the notch (pip-main.js's
+ * --muta-shape-ring), growing out from under its black shape and back, the
+ * window staying in.
+ */
+html.muta-root:has(> body.is-docked)::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -2;
+  pointer-events: none;
+  background: rgb(48 209 88);
+  clip-path: var(--muta-shape-in);
+  opacity: 0;
+  transition:
+    clip-path 260ms cubic-bezier(0.5, 0, 0.7, 0.4),
+    opacity 400ms ease;
+}
+html.muta-root:has(> body.is-docked[data-muta-flash="failed"])::after {
+  background: rgb(255 69 58);
+}
+html.muta-root:has(> body.is-docked.is-notched.is-flashing)::after {
+  clip-path: var(--muta-shape-ring);
+  opacity: 1;
+  transition:
+    clip-path 340ms cubic-bezier(0.2, 0.9, 0.1, 1),
+    opacity 160ms ease-out;
 }
 /*
  * Watching agents edit (main.js's onAgentEdit()): what an agent is about to
@@ -1089,6 +1266,14 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
     opacity: 0;
   }
 }
+@keyframes muta-flash-still {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
 @keyframes muta-beam-wait {
   50% {
     opacity: 0.25;
@@ -1110,6 +1295,18 @@ html.muta-root:has(> body.is-docked.is-notched)::before {
   }
   .muta-window .muta-caret.is-done {
     animation: none;
+  }
+  /* Done or failed: shown, held and gone, without fading. */
+  .muta-flash {
+    animation: muta-flash-still 1600ms step-end both;
+  }
+  .muta-agent-glow::after,
+  .muta-agent-haze,
+  .muta-agent-bloom,
+  .muta-agent-rim::before,
+  .muta-agent-rim::after,
+  html.muta-root:has(> body.is-docked)::after {
+    transition: none !important;
   }
   /* Waiting on you, still: dimmed instead of breathing. */
   :is(.muta-agent-glow, .muta-agent-rim).is-waiting {

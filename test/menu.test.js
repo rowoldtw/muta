@@ -119,3 +119,24 @@ test("the light on the buttons beside the notch: only each pill's lower outline,
   expect(d).toContain("L62,29.5")
   expect(svg).toContain('stop-opacity="0"')
 })
+
+test("picked docked at the notch, the window stays out a moment, though the pick left the cursor below it", () => {
+  const p = Object.create(pip.Pip.prototype)
+  const said = []
+  Object.assign(p, { notch: { until: 0 }, closeMenu: () => said.push("close"), pollNotch: () => {}, renderNotch: (js) => said.push(js) })
+  p.onMenu("pick", 3)
+  expect(p.notch.until).toBeGreaterThan(Date.now() + 1500)
+  expect(said[0]).toBe("close")
+  expect(said[1]).toContain("mutaMenuPick(3)")
+  // Not docked, there's nothing to hold out.
+  const q = Object.assign(Object.create(pip.Pip.prototype), { notch: null, closeMenu: () => {}, renderNotch: () => {} })
+  expect(() => q.onMenu("pick", 0)).not.toThrow()
+})
+
+test("the window's theme: dark while docked at the notch, whatever Obsidian's; else Obsidian's", () => {
+  const { windowTheme } = require("./setup.js").testing
+  expect(windowTheme(true, true)).toBe("theme-dark")
+  expect(windowTheme(true, false)).toBe("theme-dark")
+  expect(windowTheme(false, true)).toBe("theme-light")
+  expect(windowTheme(false, false)).toBe("theme-dark")
+})

@@ -197,6 +197,60 @@ test("a failed turn ends (Claude Code's API error, OpenCode's failed turn)", () 
   expect(run("opencode", fixture("opencode-failed", vault)).working).toBe(false)
 })
 
+test("how a turn ended: done or failed, from each agent's own word; an interrupted one, or the idle after it, is neither", () => {
+  const outcome = (kind, events) => run(kind, events).outcome
+  expect(outcome("codex", fixture("codex", vault).slice(0, -1))).toBe("done") // Stop
+  expect(outcome("codex", fixture("codex-interrupted", vault).slice(0, 4))).toBe(null) // Interrupt
+  expect(outcome("opencode", fixture("opencode", vault))).toBe("done")
+  expect(outcome("opencode", fixture("opencode-failed", vault))).toBe("failed")
+  expect(outcome("opencode", fixture("opencode-permission", vault))).toBe(null) // interrupted
+  expect(outcome("antigravity", fixture("antigravity", vault))).toBe("done")
+  expect(outcome("claude", fixture("claude-failed", vault))).toBe("failed") // StopFailure, then SessionEnd
+  expect(outcome("claude", fixture("claude-denied", vault))).toBe(null) // Esc, then quit
+  const c = (hook_event_name, extra = {}) => ({ session_id: "s1", cwd: "/v", hook_event_name, ...extra })
+  const done = run("claude", [c("UserPromptSubmit"), c("Stop"), c("Notification", { notification_type: "idle_prompt" })])
+  expect([done.outcome, done.outcomes]).toEqual(["done", 1])
+  // A new turn starts clean.
+  expect(run("claude", [c("UserPromptSubmit"), c("Stop"), c("UserPromptSubmit")]).outcome).toBe(null)
+  const k = (hook_event_name, extra = {}) => ({ conversation_id: "c1", workspace_roots: ["/v"], hook_event_name, ...extra })
+  for (const [status, said] of [["completed", "done"], ["error", "failed"], ["aborted", null]])
+    expect(outcome("cursor", [k("beforeSubmitPrompt"), k("stop", { status })])).toBe(said)
+})
+
+test("a turn ending in the vault is told once, done or failed, even one too quick for its beam", async () => {
+  const { w } = watcher()
+  const told = []
+  w.onFinish = (t) => told.push([t.kind, t.outcome])
+  // Prompt, failure and the session's end all in one read: never at work when polled.
+  write("claude", fixture("claude-failed", vault))
+  await w.poll()
+  write("codex", fixture("codex", vault).slice(0, 3))
+  await w.poll()
+  write("codex", fixture("codex", vault).slice(3))
+  await w.poll()
+  await w.poll()
+  expect(told).toEqual([["claude", "failed"], ["codex", "done"]])
+})
+
+test("a turn ending elsewhere, interrupted, or before this watcher began (a reload reading it back) isn't told", async () => {
+  const elsewhere = fs.mkdtempSync(path.join(home, "elsewhere-"))
+  write("codex", fixture("codex", elsewhere))
+  write("opencode", fixture("opencode-permission", vault))
+  write("antigravity", fixture("antigravity", vault), Date.now() - 60000)
+  const { w } = watcher()
+  w.since = Date.now() - 1000
+  const told = []
+  w.onFinish = (t) => told.push(t.kind)
+  await w.poll()
+  expect(told).toEqual([])
+  // Had it begun before, Antigravity's would have been told.
+  const before = watcher()
+  before.w.since = 0
+  before.w.onFinish = (t) => told.push(t.kind)
+  await before.w.poll()
+  expect(told).toEqual(["antigravity"])
+})
+
 test("waiting reaches the window, and outlasts the half hour of quiet while its agent runs", async () => {
   const { w, changes } = watcher()
   write("claude", fixture("claude-allowed", vault).slice(0, 2), Date.now())

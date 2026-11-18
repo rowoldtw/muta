@@ -78,6 +78,14 @@ const EDIT_CARET_LINGER_MS = 8000
 /** How long a beam takes to go round the edge (styles.css's muta-beam-turn), and how many show at once. */
 const BEAM_TURN_MS = 2600
 const MAX_BEAMS = 4
+/**
+ * An agent's turn ending, or one of Muta's own one-off actions: the whole
+ * border glows green when it's done, red when it failed, over the beams,
+ * this long (ms; styles.css's muta-flash), the beams giving way until it
+ * starts to fade.
+ */
+const FLASH_MS = 1600
+const FLASH_FADE_AT = 0.6
 /** How long to wait for a new window to appear (ms): a cold start can be slow. */
 const WINDOW_WAIT_MS = 4000
 /** The top bar drags the window; its buttons still click. */
@@ -418,6 +426,7 @@ const AGENT_EVENTS = {
     return {
       cwd: e.cwd,
       waiting: event === "PermissionRequest",
+      outcome: event === "Stop" ? "done" : event === "StopFailure" ? "failed" : null,
       turn:
         event === "UserPromptSubmit" || event === "PreToolUse" || event === "PostToolUse" || event === "PermissionRequest"
           ? "start"
@@ -442,6 +451,7 @@ const AGENT_EVENTS = {
     return {
       cwd: e.cwd,
       waiting: event === "PermissionRequest",
+      outcome: event === "Stop" ? "done" : null,
       turn:
         event === "UserPromptSubmit" || event === "PreToolUse" || event === "PostToolUse" || event === "PermissionRequest"
           ? "start"
@@ -463,6 +473,7 @@ const AGENT_EVENTS = {
     return {
       cwd: e.directory,
       waiting: e.type === "permission.asked",
+      outcome: e.type === "session.execution.succeeded" ? "done" : e.type === "session.execution.failed" ? "failed" : null,
       turn:
         e.type === "session.execution.started" || e.type === "tool" || /^permission\./.test(e.type || "")
           ? "start"
@@ -479,6 +490,8 @@ const AGENT_EVENTS = {
     const event = e.hook_event_name
     return {
       cwd: Array.isArray(e.workspace_roots) ? e.workspace_roots[0] : null,
+      // Its stop says how the turn went: completed, error or aborted (stopped by you: neither).
+      outcome: event === "stop" ? (e.status === "error" ? "failed" : e.status === "aborted" ? null : "done") : null,
       turn: event === "stop" ? "end" : event === "sessionEnd" ? "over" : "start",
       edits:
         event === "afterFileEdit" && e.file_path
@@ -500,6 +513,7 @@ const AGENT_EVENTS = {
     const edit = event === "PreToolUse" && /^(edit_file|write_file)$/.test(call.name || "") && args.Path
     return {
       cwd: e.cwd || (Array.isArray(e.workspacePaths) ? e.workspacePaths[0] : null),
+      outcome: event === "Stop" ? "done" : null,
       turn: event === "PreInvocation" || event === "PreToolUse" ? "start" : event === "Stop" ? "end" : null,
       edits: edit ? [{ path: args.Path, text: args.Replacement || args.Content || "", old: args.Target || "" }] : [],
     }
@@ -509,7 +523,9 @@ const AGENT_EVENTS = {
 /**
  * An agent's session after its event e (at: when, ms; pid: the agent's
  * process, when known), from session (or none yet):
- * { id, kind, cwd, pid, working, waiting, ended, edits, at }.
+ * { id, kind, cwd, pid, working, waiting, ended, edits, at, outcome, outcomes }.
+ * outcome: how its last turn ended, "done" or "failed" (null for one
+ * interrupted, or still going); outcomes counts them, so each is told once.
  */
 function agentEvent(kind, session, e, at, pid) {
   const s = session
@@ -523,8 +539,15 @@ function agentEvent(kind, session, e, at, pid) {
   if (said.turn === "start") {
     s.working = true
     s.ended = false
-  } else if (said.turn === "end") s.working = false
-  else if (said.turn === "over") {
+    s.outcome = null
+  } else if (said.turn === "end") {
+    // Only a turn at work ends done or failed: not the idle after it, nor one already stopped.
+    if (s.working && said.outcome) {
+      s.outcome = said.outcome
+      s.outcomes = (s.outcomes || 0) + 1
+    }
+    s.working = false
+  } else if (said.turn === "over") {
     s.working = false
     s.ended = true
   }
@@ -613,6 +636,10 @@ class AgentWatch {
     this.editsSeen = new Map()
     this.checked = new Map()
     this.watchers = []
+    // Turns that ended done or failed since the last poll, for onFinish; only
+    // those after this watcher began (a reload reads earlier ones back).
+    this.since = Date.now()
+    this.finished = []
   }
 
   /** The user's home folder, where the agents keep their settings and Muta its events. */
@@ -829,7 +856,10 @@ class AgentWatch {
         const id = e && sessionId(kind, e)
         if (!id) continue
         const key = `${kind}:${id}`
-        this.sessions.set(key, agentEvent(kind, this.sessions.get(key), e, d.at || now, d.pid))
+        const before = this.sessions.get(key)
+        const s = agentEvent(kind, before, e, d.at || now, d.pid)
+        this.sessions.set(key, s)
+        if (s.outcome && s.outcomes !== (before && before.outcomes) && (d.at || now) >= this.since) this.finished.push({ key, s })
       }
     }
   }
@@ -891,7 +921,10 @@ class AgentWatch {
       // the sessions read so far are taken as stopped until they're heard from.
       const missed = this.markRunning(true)
       this.readEvents(now)
-      if (missed) for (const [key, s] of this.sessions) this.sessions.set(key, { ...s, working: false, waiting: false })
+      if (missed) {
+        for (const [key, s] of this.sessions) this.sessions.set(key, { ...s, working: false, waiting: false })
+        this.finished = []
+      }
       const on = new Set(this.watched())
       const all = []
       for (const [key, session] of this.sessions) {
@@ -919,10 +952,27 @@ class AgentWatch {
       for (const id of seen.keys()) if (!all.some((a) => a.id === id)) seen.delete(id)
       all.sort((a, b) => seen.get(a.id) - seen.get(b.id))
       this.set(all.length ? { all } : null)
+      this.reportFinished(now)
     } catch (error) {
       console.error("Muta: checking for agents", error)
     } finally {
       this.busy = false
+    }
+  }
+
+  /**
+   * Tells onFinish({ id, kind, outcome }) of each turn just ended done or
+   * failed by an agent at work in the vault (as its beam counts it), once,
+   * even one so quick its beam never showed.
+   */
+  reportFinished(now) {
+    // As each was when its turn ended: by now it may be over and gone.
+    const finished = this.finished
+    this.finished = []
+    for (const { key, s } of finished) {
+      const edited = s.edits.some((e) => now - e.at < AGENT_EDIT_MS && this.toVault(e.path))
+      if (!edited && !this.inVault(s.cwd)) continue
+      if (this.onFinish) this.onFinish({ id: key, kind: s.kind, outcome: s.outcome })
     }
   }
 
@@ -1068,6 +1118,13 @@ function keysOutline(pills, width, height) {
   const fade = `<linearGradient id="fade" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity="0"/><stop offset="1" stop-color="#fff"/></linearGradient>`
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><defs>${fade}</defs>${paths}</svg>`
 }
+
+/**
+ * The theme class the window's page should have: docked at the notch it's
+ * always dark (it grows out of the black notch); otherwise Obsidian's
+ * (light: whether Obsidian's own window is light).
+ */
+const windowTheme = (docked, light) => (docked || !light ? "theme-dark" : "theme-light")
 
 /** The keys to hold while hovering a link to preview it (settings.hoverKey). */
 const HOVER_KEYS = { meta: "⌘ Command", alt: "⌥ Option", ctrl: "⌃ Control", shift: "⇧ Shift", none: "None: any hover" }
@@ -1238,6 +1295,7 @@ module.exports = class extends Plugin {
     this.agent = null
     this.agents = new AgentWatch(this, (state) => this.onAgent(state))
     this.agents.onEdit = (edit) => this.onAgentEdit(edit)
+    this.agents.onFinish = (turn) => this.flash(turn.outcome)
     this.agents.upgrade()
     this.pendingEdits = []
     if (this.settings.agentIndicator) this.agents.start()
@@ -1376,6 +1434,38 @@ module.exports = class extends Plugin {
     const { agent } = this
     doc.body.classList.toggle("has-agent", !!agent)
     this.showBeams(doc, agent ? agent.all : [])
+  }
+
+  /**
+   * The whole border glows green (outcome "done") or red ("failed") for a
+   * moment (styles.css's .muta-flash): an agent's turn ending, or one of
+   * Muta's one-off actions. It takes over from the beams while it lasts.
+   * Docked in the notch, a thin ring of it lights round the notch instead.
+   */
+  flash(outcome) {
+    const doc = this.leaf && this.leaf.view.containerEl.ownerDocument
+    if (!doc || doc === document) return
+    const view = this.leaf.view
+    const body = doc.body
+    const win = doc.defaultView
+    win.clearTimeout(this.flashFade)
+    win.clearTimeout(this.flashEnd)
+    // A new one starts over.
+    for (const el of this.flashEls || []) el.remove()
+    const make = (parent, cls) => {
+      const el = parent.createDiv({ cls })
+      el.dataset.outcome = outcome
+      return el
+    }
+    this.flashEls = [make(view.contentEl, "muta-flash"), make(body, "muta-flash muta-flash-rim"), make(view.headerEl, "muta-flash muta-flash-keys")]
+    body.dataset.mutaFlash = outcome
+    body.addClass("is-flashing")
+    this.updateKeys()
+    this.flashFade = win.setTimeout(() => body.removeClass("is-flashing"), FLASH_MS * FLASH_FADE_AT)
+    this.flashEnd = win.setTimeout(() => {
+      for (const el of this.flashEls || []) el.remove()
+      this.flashEls = null
+    }, FLASH_MS)
   }
 
   // ── Watching agents edit (experimental) ────────────────────────────
@@ -2484,15 +2574,7 @@ module.exports = class extends Plugin {
     const doc = this.leaf && this.leaf.view.containerEl.ownerDocument
     if (doc && doc !== document) {
       doc.body.style.setProperty("--muta-darkness", String(this.settings.darkness))
-      // Docked at the notch it stays dark (pip-main.js), whatever the theme
-      // says; it notes whether Obsidian is light, to go back to when it leaves.
-      const body = doc.body
-      if (body.classList.contains("is-docked")) {
-        if (document.body.classList.contains("theme-light")) {
-          body.classList.replace("theme-light", "theme-dark")
-          body.dataset.mutaLight = "true"
-        } else delete body.dataset.mutaLight
-      }
+      this.keepTheme(doc)
     }
     if (this.isOpen()) {
       this.win.setVisibleOnAllWorkspaces(this.settings.allSpaces, {
@@ -2690,7 +2772,10 @@ module.exports = class extends Plugin {
     const ipc = window.electron.ipcRenderer
     const opened = ipc.sendSync("vault-open", path, false)
     if (opened === true) window.close()
-    else new Notice(`Muta: couldn't open that vault${typeof opened === "string" ? ` (${opened})` : ""}`)
+    else {
+      new Notice(`Muta: couldn't open that vault${typeof opened === "string" ? ` (${opened})` : ""}`)
+      this.flash("failed")
+    }
   }
 
   /** Does what an item of Muta's menu says (menuItems()). */
@@ -2745,6 +2830,7 @@ module.exports = class extends Plugin {
     const script = `tell application "Terminal"\nactivate\ndo script ${appleQuote(command)}\nend tell`
     require("child_process").execFile("/usr/bin/osascript", ["-e", script], (error) => {
       if (error) new Notice(`Muta: couldn't open Terminal (${error.message})`)
+      this.flash(error ? "failed" : "done")
     })
     new Notice(`Muta: sent "${file.basename}" to ${AGENT_NAMES[kind]}`)
   }
@@ -2767,6 +2853,19 @@ module.exports = class extends Plugin {
     }
   }
 
+  /**
+   * Keeps the window's page in its theme (windowTheme()): dark while docked
+   * at the notch, else Obsidian's, read from Obsidian's own window so a
+   * change made while docked is followed on leaving. Only swaps a theme
+   * class Obsidian has put there.
+   */
+  keepTheme(doc) {
+    const list = doc.body.classList
+    const want = windowTheme(list.contains("is-docked"), document.body.classList.contains("theme-light"))
+    const other = want === "theme-dark" ? "theme-light" : "theme-dark"
+    if (list.contains(other)) list.replace(other, want)
+  }
+
   /** Wires up the window, once per window. */
   attach() {
     const doc = this.leaf && this.leaf.view.containerEl.ownerDocument
@@ -2775,6 +2874,9 @@ module.exports = class extends Plugin {
     doc.body.classList.add("muta-window")
     doc.body.style.setProperty("--muta-darkness", String(this.settings.darkness))
     doc.documentElement.classList.add("muta-root")
+    // Obsidian sets the page's theme whenever it likes: docked, it's put back to dark at once.
+    new doc.defaultView.MutationObserver(() => this.keepTheme(doc)).observe(doc.body, { attributes: true, attributeFilter: ["class"] })
+    this.keepTheme(doc)
     this.showTucked()
     // Touch-down and lift on the trackpad, from pip-main.js, for whatever needs them.
     const gestures = new Set()
@@ -3415,6 +3517,7 @@ module.exports.testing = {
   editLines,
   landed,
   keysOutline,
+  windowTheme,
   agentPrompt,
   menuItems,
   gitRoot,
